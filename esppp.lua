@@ -1,2432 +1,1627 @@
---[[
-	sensory esp
-	authors: dacces, Gemini, OpenAI, Claude, Deepseek
-
-	inspired by: 
-	https://v3rm.net/threads/chatgpt-esp-by-me.28629/#post-242437
-]]
-
-if not LPH_OBFUSCATED then
-    LPH_JIT = LPH_JIT or function(...)
-        return ...
-    end
-    LPH_JIT_MAX = LPH_JIT_MAX or function(...)
-        return ...
-    end
-    LPH_NO_VIRTUALIZE = LPH_NO_VIRTUALIZE or function(...)
-        return ...
-    end
-    LPH_NO_UPVALUES = LPH_NO_UPVALUES or function(f)
-        return function(...)
-            return f(...)
-        end
-    end
-    LPH_ENCSTR = LPH_ENCSTR or function(...)
-        return ...
-    end
-    LPH_ENCNUM = LPH_ENCNUM or function(...)
-        return ...
-    end
-    LPH_ENCFUNC = LPH_ENCFUNC or function(func, key1, key2)
-        if key1 ~= key2 then
-            return print("LPH_ENCFUNC mismatch")
-        end
-        return func
-    end
-    LPH_CRASH = LPH_CRASH or function()
-        return print(debug.traceback())
-    end
-end
-
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
-local Workspace = game:GetService("Workspace")
-local HttpService = game:GetService("HttpService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-local WtS = Camera.WorldToViewportPoint
-local UIContainer = gethui and gethui() or CoreGui
-local BootstrapPlayers = Players
-local LPHNoVirtualize = LPH_NO_VIRTUALIZE
-local ESP = {}
-local ChamsContainer
-local MeshChamsFolder
-local ScreenGui
-local PlayerRemovingConnection
-local InputBeganConnection
-local CurrentRunId = HttpService:GenerateGUID(false)
-
-if getgenv().SensoryESP_Unload then
-    pcall(getgenv().SensoryESP_Unload)
-end
-
-local oldChams = UIContainer:FindFirstChild("SensoryESP_Chams")
-if oldChams then
-    pcall(function() oldChams:Destroy() end)
-end
-
-local oldMeshFolder = Workspace:FindFirstChild("SensoryESP_MeshChams")
-if oldMeshFolder then
-    pcall(function() oldMeshFolder:Destroy() end)
-end
-
-local function IsMeshChamArtifact(obj)
-    if not obj then
-        return false
+    if getgenv().Library and getgenv().Library.Unload then
+        pcall(getgenv().Library.Unload, getgenv().Library)
     end
 
-    if obj:GetAttribute("SensoryESP_MeshCham") == true then
-        return true
-    end
-
-    if obj:IsA("Model") and obj.Name == "ChamShells" then
-        return true
-    end
-
-    if obj:IsA("BasePart") and obj.Name:match("^ChamShell_") then
-        return true
-    end
-
-    if obj:IsA("Highlight") and obj.Name == "ChamShellHighlight" then
-        return true
-    end
-
-    return false
-end
-
-local function CleanupMeshChams(root)
-    if not root then
-        return
-    end
-
-    for _, obj in ipairs(root:GetDescendants()) do
-        if IsMeshChamArtifact(obj) then
-            pcall(function() obj:Destroy() end)
-        end
-    end
-end
-
-local function CleanupCharacterMeshChams(character)
-    if not character then
-        return
-    end
-
-    for _, child in ipairs(character:GetChildren()) do
-        if IsMeshChamArtifact(child) then
-            pcall(function() child:Destroy() end)
-        end
-    end
-end
-
-CleanupMeshChams(Workspace)
-
-for _, player in ipairs(BootstrapPlayers:GetPlayers()) do
-    CleanupCharacterMeshChams(player.Character)
-end
-
-local function EnsureRootInstances()
-    if not ChamsContainer or not ChamsContainer.Parent then
-        ChamsContainer = Instance.new("Folder")
-        ChamsContainer.Name = "SensoryESP_Chams"
-        ChamsContainer.Parent = UIContainer
-    end
-
-    if not MeshChamsFolder or not MeshChamsFolder.Parent then
-        MeshChamsFolder = Instance.new("Folder")
-        MeshChamsFolder.Name = "SensoryESP_MeshChams"
-        MeshChamsFolder.Parent = Workspace
-    end
-
-    if not ScreenGui or not ScreenGui.Parent then
-        ScreenGui = Instance.new("ScreenGui")
-        ScreenGui.Name = "SensoryESP"
-        ScreenGui.ResetOnSpawn = false
-        ScreenGui.IgnoreGuiInset = true
-        ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-        getgenv().SensoryESP_UI = ScreenGui
-
-        local success = pcall(function()
-            ScreenGui.Parent = CoreGui
-        end)
-        if not success then
-            ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-        end
-    end
-end
-
-local labelStrokeMap = setmetatable({}, { __mode = "k" })
-local DrawLine = LPHNoVirtualize(function(line, p1, p2, thickness, color)
-    local diff = p2 - p1
-    local dist = diff.Magnitude
-    local angle = math.deg(math.atan2(diff.Y, diff.X))
-
-    line.Size = UDim2.new(0, math.floor(dist + 0.5), 0, thickness)
-    line.Position = UDim2.new(0, math.floor(p1.X + diff.X / 2 - dist / 2 + 0.5), 0,
-        math.floor(p1.Y + diff.Y / 2 - thickness / 2 + 0.5))
-    line.Rotation = angle
-    line.BackgroundColor3 = color
-    line.Visible = true
-end)
-
-local ESPConfig = {
-    -- esp checks
-    Enabled = true,
-    Keybind = {
-        Enabled = true,
-        Key = Enum.KeyCode.Insert,
-    },
-    Players = true,
-    LocalPlayer = true,
-    LimitFPS = 70, -- Set to 0 to disable limit
-    DynamicBoxes = true,
-    DynamicBoxesCheap = true,           -- needs DynamicBoxes enabled, only tracks main parts
-    DynamicBoxesIncludeAll = true,      -- needs DynamicBoxes enabled, includes every BasePart in the model
-    VisibilityCheckRate = 0.3,
-
-    -- boxes
-    Boxes = true,
-    BoxType = "Normal", -- "Normal", "Corner", or "Circle"
-    BoxColor = Color3.fromRGB(255, 255, 255),
-    BoxThickness = 1,
-    Outlines = {
-        Style = "Full", -- "Full", "None"
-        Color = Color3.fromRGB(0, 0, 0),
-        Thickness = 1,
-    },
-
-    -- boxfill
-    BoxFill = {
-        Enabled = true,
-        Color = Color3.fromRGB(255, 255, 255),
-        Transparency = 0.9,
-        Gradient = {
-            Enabled = true,
-            Color1 = Color3.fromRGB(180, 255, 255),
-            Color2 = Color3.fromRGB(0, 255, 255),
-            Color3 = Color3.fromRGB(0, 120, 255),
-            Rotation = 0,
-            Animated = true,
-            Speed = 64,          -- degrees per second
-            Direction = "Right", -- "Left" or "Right"
-        }
-    },
-
-    -- healthbar
-    HealthBar = {
-        Enabled = true,
-        Position = "Left", -- "Left", "Right", "Top", "Bottom"
-        SideGap = 2,
-        Width = 2,
-        ShowText = true,
-        TextFollowBar = true,
-        HideWhenFullHP = false,
-        FollowGradientColorText = true,
-        Font = "Smallest Pixel-7",
-        TextSize = 9,
-        Outline = {
-            Style = "Full",
-            Color = Color3.fromRGB(0, 0, 0),
-        },
-        Gradient = {
-            Enabled = true,
-            Color1 = Color3.fromRGB(0, 255, 0),   -- Full health
-            Color2 = Color3.fromRGB(255, 255, 0), -- Mid health
-            Color3 = Color3.fromRGB(255, 0, 0),   -- Low health
-        }
-    },
-
-    -- names
-    Names = true,
-    TextSize = 12,
-    TextColor = Color3.fromRGB(255, 255, 255),
-    TextOutline = true,
-    TextOutlineStyle = "Full", -- "Full", "None"
-    TextGap = 3,
-    Font = "Proggy Clean",
-    TeamIndicator = {
-        Enabled = true,
-        Position = "Right", -- "Left" or "Right"
-        UseTeamColor = true,
-        Color = Color3.fromRGB(255, 255, 255),
-        Compact = true,
-        TextSize = 10,
-    },
-    FriendlyIndicator = {
-        Enabled = true,
-        Position = "Right", -- "Left" or "Right"
-        CheckTeam = true,
-        CheckFriends = true,
-        Text = "[F]",
-        Color = Color3.fromRGB(0, 255, 0),
-    },
-    Weapon = {
-        Enabled = true,
-        Gap = 1,
-        OutlineStyle = "Full",
-        Font = "Proggy Clean",
-        TextSize = 12,
-        Color = Color3.fromRGB(255, 255, 255),
-        InventoryPath = "ReplicatedStorage.Players.%NAME%.Inventory",
-        UseToolFallback = true,
-    },
-
-    -- flags
-    Flags = {
-        Enabled = true,
-        Position = "Right",
-        Gap = 2,
-        SideGap = 4,
-        TextGap = 2,
-        OutlineStyle = "Full",
-        Font = "Smallest Pixel-7",
-        TextSize = 9,
-        Options = {
-            Idle = true,
-            Moving = true,
-            Jumping = true,
-            Swimming = true,
-        },
-        Colors = {
-            Idle = Color3.fromRGB(255, 255, 255),
-            Moving = Color3.fromRGB(255, 255, 255),
-            Jumping = Color3.fromRGB(255, 255, 255),
-            Swimming = Color3.fromRGB(65, 65, 255),
-        }
-    },
-
-    --skeleton
-    Skeleton = {
-        Enabled = true,
-        Color = Color3.fromRGB(255, 255, 255),
-        Outline = true,
-        OutlineColor = Color3.fromRGB(0, 0, 0),
-        Gradient = {
-            Enabled = true,
-            Color1 = Color3.fromRGB(255, 255, 255),
-            Color2 = Color3.fromRGB(100, 200, 255),
-        },
-    },
-
-    -- off-screen arrows
-    OffScreenArrows = {
-        Enabled = true,
-        Size = 14,
-        Color = Color3.fromRGB(255, 255, 255),
-        OrbitRadius = 100,
-        ArrowMode = "Camera",
-        Outline = true,
-        OutlineColor = Color3.fromRGB(0, 0, 0),
-        Names = {
-            Enabled = true,
-            Font = "Smallest Pixel-7",
-            TextSize = 9,
-            Color = Color3.fromRGB(255, 255, 255),
-            Outline = true,
-            OutlineColor = Color3.fromRGB(0, 0, 0),
-            Side = "Bottom",
-            Gap = 4,
-        },
-        Distance = {
-            Enabled = true,
-            Font = "Smallest Pixel-7",
-            TextSize = 9,
-            Color = Color3.fromRGB(255, 255, 255),
-            Outline = true,
-            OutlineColor = Color3.fromRGB(0, 0, 0),
-            Side = "Bottom",
-            Gap = 2,
-        },
-    },
-
-    -- distance
-    Distance = {
-        Enabled = true,
-        Unit = "Meters",
-        StudsPerMeter = 3,
-        Ending = "m",
-        Gap = 3,
-        OutlineStyle = "Full",
-        Font = "Proggy Clean",
-        TextSize = 12,
-        Color = Color3.fromRGB(255, 255, 255),
-    },
-
-    -- chams
-    Chams = {
-        Enabled = true,
-        Type = "MeshChams", -- "Highlight", "Adornment", or "MeshChams"
-
-        Highlight = {
-            FillColor = Color3.fromRGB(255, 255, 255),
-            FillTransparency = 1,
-            OutlineColor = Color3.fromRGB(255, 255, 255),
-            OutlineTransparency = 0,
-            VisibleCheck = true, -- true = Occluded, false = AlwaysOnTop
-        },
-
-        Adornment = {
-            Color = Color3.fromRGB(59, 144, 204),
-            VisibleColor = Color3.fromRGB(59, 204, 90),
-            Transparency = 0.7,
-            AlwaysOnTop = true,
-            VisibleCheck = true,
-        },
-
-        -- MeshChams: shell parts welded to each body part with a single Highlight.
-        -- Only works on humanoid targets (players / NPCs with a Humanoid).
-        MeshChams = {
-            FillColor = Color3.fromRGB(59, 144, 204),
-            FillTransparency = 0.6,
-            OutlineColor = Color3.fromRGB(255, 255, 255),
-            OutlineTransparency = 0,
-            VisibleCheck = true, -- true = Occluded, false = AlwaysOnTop
-        },
-    },
-
-    -- directories
-    Directories = {
-        --[[{
-                DisplayName = "Part",
-                Path = "workspace.Folder.common3",
-                Multiple = true,
-                Cheap = true,
-                Contains = {},
-                Names = {"Part"}
-            },
-        {
-            DisplayName = "Dummy",
-            Path = "workspace",
-            Multiple = true,
-            Cheap = false,
-            Contains = {},
-            NonHuman = false,
-            NoStatus = false,
-            Names = { "Dummy", "Rig" }
-        },
-        {
-            DisplayName = "UAZ",
-            Path = "workspace",
-            Multiple = true,
-            Cheap = false,
-            NonHuman = true,
-            NoStatus = true,
-            Contains = {},
-            Names = { "UAZ" },
-            Config = {
-                -- Box Settings
-                Boxes = true,
-                BoxColor = Color3.fromRGB(255, 150, 0),
-                BoxThickness = 1.5,
-
-
-                BoxFill = {
-                    Enabled = true,
-                    Color = Color3.fromRGB(255, 150, 0),
-                    Transparency = 0.8,
-                    Gradient = {
-                        Enabled = true,
-                        Color1 = Color3.fromRGB(255, 150, 0),
-                        Color2 = Color3.fromRGB(255, 255, 255),
-                        Color3 = Color3.fromRGB(255, 150, 0),
-                        Rotation = 0,
-                        Animated = true,
-                        Speed = 90,
-                        Direction = "Left",
-                    }
-                },
-
-                -- Text Settings
-                TextColor = Color3.fromRGB(255, 200, 50),
-                TextSize = 12,
-                TextOutline = true,
-                TextGap = 4,
-                Font = "Proggy Clean",
-
-                -- Distance Settings
-                Distance = {
-                    Enabled = true,
-                    Unit = "Meters",
-                    Ending = "m",
-                    Gap = 5,
-                    Color = Color3.fromRGB(255, 200, 50),
-                },
-
-                -- Chams Settings
-                Chams = {
-                    Enabled = true,
-                    Type = "Highlight",
-                    Highlight = {
-                        FillColor = Color3.fromRGB(255, 150, 0),
-                        FillTransparency = 0.7,
-                        OutlineColor = Color3.fromRGB(255, 255, 255),
-                        OutlineTransparency = 1,
-                        VisibleCheck = false,
-                    },
-                    Adornment = {
-                        Color = Color3.fromRGB(255, 150, 0),
-                        VisibleColor = Color3.fromRGB(0, 255, 0),
-                        Transparency = 0.5,
-                        AlwaysOnTop = true,
-                        VisibleCheck = true,
-                    }
-                },
-
-                -- Flags Settings
-                Flags = {
-                    Enabled = true,
-                    Position = "Left",
-                    SideGap = 4,
-                    TextGap = 2,
-                    Font = "Smallest Pixel-7",
-                    TextSize = 9,
-                    Options = {
-                        Idle = true,
-                        Moving = true,
-                    },
-                    Colors = {
-                        Idle = Color3.fromRGB(255, 255, 255),
-                        Moving = Color3.fromRGB(255, 150, 0),
-                    }
-                },
-
-                -- HealthBar Settings
-                HealthBar = {
-                    Enabled = true,
-                    Position = "Bottom",
-                    SideGap = 2,
-                    Width = 2,
-                    ShowText = true,
-                    TextFollowBar = true,
-                    HideWhenFullHP = false,
-                    FollowGradientColorText = true,
-                    Outline = {
-                        Style = "Full",
-                        Color = Color3.fromRGB(0, 0, 0),
-                    },
-                    Gradient = {
-                        Enabled = true,
-                        Color1 = Color3.fromRGB(0, 255, 0),
-                        Color2 = Color3.fromRGB(255, 255, 0),
-                        Color3 = Color3.fromRGB(255, 0, 0),
-                    }
-                },
-
-                -- Skeleton Settings (Template only, usually for players)
-                Skeleton = {
-                    Enabled = false,
-                    Color = Color3.fromRGB(255, 255, 255),
-                    Outline = true,
-                    OutlineColor = Color3.fromRGB(0, 0, 0),
-                }
-            }
-        },
-        {
-            DisplayName = "FPV Drone",
-            Path = "workspace",
-            Multiple = true,
-            Cheap = false,
-            NonHuman = true,
-            NoStatus = true,
-            Contains = {},
-            Names = { "FPVDrone" }
-        },
-        {
-            DisplayName = "",
-            Path = "workspace.AiZones",
-            Multiple = true,
-            Cheap = false,
-            NonHuman = false,
-            NoStatus = true,
-            Recursive = true,
-            Contains = {},
-            BlockNames = { "OutpostClaymores", "OutpostLandmines", "ElectricityAnomaly" },
-            Names = { "" }
-        },
-        --[[
-            {
-                DisplayName = "CashRegister",
-                Path = "workspace",
-                Multiple = true,
-                Cheap = true,
-                Contains = {},
-                Names = {"CashRegister"}
-            },
-        ]]
-    }
-}
-
-local function DeepCopy(tbl)
-    if type(tbl) ~= "table" then
-        return tbl
-    end
-
-    local copy = {}
-    for key, value in pairs(tbl) do
-        copy[key] = DeepCopy(value)
-    end
-    return copy
-end
-
-local function DeepMerge(base, override)
-    if type(override) ~= "table" then
-        return base
-    end
-
-    for key, value in pairs(override) do
-        if type(value) == "table" and type(base[key]) == "table" then
-            DeepMerge(base[key], value)
-        else
-            base[key] = value
-        end
-    end
-
-    return base
-end
-
-local DefaultESPConfig = DeepCopy(ESPConfig)
-
-local function CompactTeamName(teamName)
-    if type(teamName) ~= "string" or teamName == "" then
-        return ""
-    end
-
-    local parts = {}
-    for part in teamName:gmatch("[^%s%-_]+") do
-        if part ~= "" then
-            table.insert(parts, part)
-        end
-    end
-
-    if #parts == 0 then
-        return teamName
-    end
-
-    if #parts == 1 then
-        local single = parts[1]
-        if #single <= 4 then
-            return single:upper()
-        end
-        return single:sub(1, 1):upper()
-    end
-
-    local compact = {}
-    for _, part in ipairs(parts) do
-        table.insert(compact, part:sub(1, 1):upper())
-    end
-    return table.concat(compact)
-end
-
-local function ColorToHex(color)
-    local r = math.clamp(math.floor(color.R * 255 + 0.5), 0, 255)
-    local g = math.clamp(math.floor(color.G * 255 + 0.5), 0, 255)
-    local b = math.clamp(math.floor(color.B * 255 + 0.5), 0, 255)
-    return string.format("#%02X%02X%02X", r, g, b)
-end
---
-
---// fonts
-local _fontMap = {
-    ["Proggy Clean"] = Enum.Font.SourceSans,
-    ["Smallest Pixel-7"] = Enum.Font.SourceSans,
-    ["Tahoma"] = Enum.Font.SourceSans,
-    ["Minecraftia"] = Enum.Font.SourceSans,
-    ["Tahoma Modern Bold"] = Enum.Font.SourceSansBold,
-}
-
-local FontsToDownload = {
-    ["Tahoma"] = { TTF = "https://github.com/LuckyHub1/LuckyHub/raw/main/zekton_rg.ttf" },
-    ["Minecraftia"] = { TTF = "https://github.com/LuckyHub1/LuckyHub/raw/refs/heads/main/Minecraftia.ttf" },
-    ["Smallest Pixel-7"] = { TTF = "https://github.com/i77lhm/storage/raw/refs/heads/main/fonts/smallest_pixel-7.ttf" },
-    ["Proggy Clean"] = { TTF = "https://github.com/i77lhm/storage/raw/refs/heads/main/fonts/ProggyClean.ttf" },
-    ["Tahoma Modern Bold"] = { TTF = "https://github.com/i77lhm/storage/raw/refs/heads/main/fonts/Tahoma-Modern-Bold.ttf" },
-}
-
-local ESPFonts = { Loaded = {} }
-local FontsStillLoading = true
-
-
-local SKELETON_BONE_DEFS = {
-    -- Spine
-    { "UpperTorso", "LowerTorso" },
-    -- Head to torso
-    { "Head", "UpperTorso" },
-    -- Left arm
-    { "UpperTorso", "LeftUpperArm" },
-    { "LeftUpperArm", "LeftLowerArm" },
-    { "LeftLowerArm", "LeftHand" },
-    -- Right arm
-    { "UpperTorso", "RightUpperArm" },
-    { "RightUpperArm", "RightLowerArm" },
-    { "RightLowerArm", "RightHand" },
-    -- Left leg
-    { "LowerTorso", "LeftUpperLeg" },
-    { "LeftUpperLeg", "LeftLowerLeg" },
-    { "LeftLowerLeg", "LeftFoot" },
-    -- Right leg
-    { "LowerTorso", "RightUpperLeg" },
-    { "RightUpperLeg", "RightLowerLeg" },
-    { "RightLowerLeg", "RightFoot" },
-}
-
-local function GetBonePosition(character, boneName)
-    local part = character:FindFirstChild(boneName)
-    if part then return part.Position end
-
-    -- R6 fallback (exact checks, no pattern matching to avoid false positives)
-    if boneName == "Head" then
-        part = character:FindFirstChild("Head")
-    elseif boneName == "UpperTorso" then
-        part = character:FindFirstChild("Torso")
-    elseif boneName == "LowerTorso" then
-        part = character:FindFirstChild("Torso")
-        if part then return (part.CFrame * CFrame.new(0, -1.2, 0)).Position end
-    elseif boneName == "LeftUpperArm" then
-        part = character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftArm")
-    elseif boneName == "LeftLowerArm" then
-        part = character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftArm")
-        if part then return (part.CFrame * CFrame.new(0, -0.8, 0)).Position end
-    elseif boneName == "LeftHand" then
-        part = character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftArm")
-        if part then return (part.CFrame * CFrame.new(0, -1.5, 0)).Position end
-    elseif boneName == "RightUpperArm" then
-        part = character:FindFirstChild("Right Arm") or character:FindFirstChild("RightArm")
-    elseif boneName == "RightLowerArm" then
-        part = character:FindFirstChild("Right Arm") or character:FindFirstChild("RightArm")
-        if part then return (part.CFrame * CFrame.new(0, -0.8, 0)).Position end
-    elseif boneName == "RightHand" then
-        part = character:FindFirstChild("Right Arm") or character:FindFirstChild("RightArm")
-        if part then return (part.CFrame * CFrame.new(0, -1.5, 0)).Position end
-    elseif boneName == "LeftUpperLeg" then
-        part = character:FindFirstChild("Left Leg") or character:FindFirstChild("LeftLeg")
-    elseif boneName == "LeftLowerLeg" then
-        part = character:FindFirstChild("Left Leg") or character:FindFirstChild("LeftLeg")
-        if part then return (part.CFrame * CFrame.new(0, -0.8, 0)).Position end
-    elseif boneName == "LeftFoot" then
-        part = character:FindFirstChild("Left Leg") or character:FindFirstChild("LeftLeg")
-        if part then return (part.CFrame * CFrame.new(0, -1.5, 0)).Position end
-    elseif boneName == "RightUpperLeg" then
-        part = character:FindFirstChild("Right Leg") or character:FindFirstChild("RightLeg")
-    elseif boneName == "RightLowerLeg" then
-        part = character:FindFirstChild("Right Leg") or character:FindFirstChild("RightLeg")
-        if part then return (part.CFrame * CFrame.new(0, -0.8, 0)).Position end
-    elseif boneName == "RightFoot" then
-        part = character:FindFirstChild("Right Leg") or character:FindFirstChild("RightLeg")
-        if part then return (part.CFrame * CFrame.new(0, -1.5, 0)).Position end
-    end
-
-    return part and part.Position
-end
-local FontLoadingCapable = writefile and isfile and getcustomasset
-local function LoadCustomFont(Name, Link)
-    if not FontLoadingCapable then return end
-    local fn = Name:gsub("%s+", "")
-    local okDL, data = pcall(function() return game:HttpGet(Link) end)
-    if not okDL or not data or data == "" then return end
-    local okWrite = pcall(writefile, fn .. ".ttf", data)
-    if not okWrite then return end
-    local okConfig = pcall(function()
-        local config = {
-            name = fn,
-            faces = { { name = "Regular", weight = 400, style = "normal", assetId = getcustomasset(fn .. ".ttf") } }
-        }
-        writefile(fn .. ".ttf.json", HttpService:JSONEncode(config))
-    end)
-    if not okConfig then return end
-    local okLoad, font = pcall(Font.new, getcustomasset(fn .. ".ttf.json"), Enum.FontWeight.Regular)
-    if okLoad and font then
-        ESPFonts.Loaded[Name] = font
-    end
-end
-
-local function AttemptLoadFonts()
-    if not FontLoadingCapable then FontsStillLoading = false; return end
-    for Name, Table in pairs(FontsToDownload) do
-        if ESPFonts.Loaded[Name] then continue end
-        LoadCustomFont(Name, Table.TTF)
-    end
-    FontsStillLoading = false
-    for Name in pairs(FontsToDownload) do
-        if not ESPFonts.Loaded[Name] then FontsStillLoading = true; break end
-    end
-end
-
-task.spawn(function()
-    task.wait(1)
-    AttemptLoadFonts()
-end)
---
-
---// variables
-local TrackedInstances = {}
-
---// functions
-local function GetInstanceFromPath(path)
-    local parts = string.split(path, ".")
-    local current = game
-    for _, partName in ipairs(parts) do
-        if current == game and (partName == "Workspace" or partName == "workspace") then
-            current = Workspace
-        elseif current == game and partName == "Players" then
-            current = Players
-        else
-            local found = current:FindFirstChild(partName)
-            if found then
-                current = found
-            else
-                return nil
-            end
-        end
-    end
-    return current ~= game and current or nil
-end
-
-local function CreateLine(parent)
-    local line = Instance.new("Frame")
-    line.BorderSizePixel = 0
-    line.BackgroundColor3 = ESPConfig.BoxColor
-    line.Parent = parent
-
-    local outline = Instance.new("Frame")
-    outline.BorderSizePixel = 0
-    outline.BackgroundColor3 = ESPConfig.Outlines.Color
-    outline.ZIndex = 0
-    outline.Parent = line
-
-    return line, outline
-end
-
-local CreateESPObj = LPHNoVirtualize(function(name)
-    local espObj = {
-        Visible = false,
-        Lines = {},
-        Outlines = {},
-        CornerLines = {},
-        CornerOutlines = {},
-
-        FlagLabels = {},
-        LastVisCheck = 0,
-        CachedModelVisible = true
-    }
-
-    local container = Instance.new("Frame")
-    container.BackgroundTransparency = 1
-    container.Name = "ESPObj"
-    container.Parent = ScreenGui
-    espObj.Container = container
-
-    local boxFill = Instance.new("Frame")
-    boxFill.BorderSizePixel = 0
-    boxFill.ZIndex = 0
-    boxFill.Visible = false
-    boxFill.Parent = container
-    espObj.BoxFill = boxFill
-
-    local fillGradient = Instance.new("UIGradient")
-    fillGradient.Parent = boxFill
-    espObj.BoxFillGradient = fillGradient
-
-    for i = 1, 4 do
-        local line, outline = CreateLine(container)
-        espObj.Lines[i] = line
-        espObj.Outlines[i] = outline
-    end
-
-    for i = 1, 8 do
-        local line, outline = CreateLine(container)
-        line.Visible = false
-        outline.Visible = false
-        espObj.CornerLines[i] = line
-        espObj.CornerOutlines[i] = outline
-    end
-
-    local function SetupLabel(label)
-        label.BackgroundTransparency = 1
-        label.Size = UDim2.new(0, 100, 0, ESPConfig.TextSize)
-        label.Font = _fontMap[ESPConfig.Font] or Enum.Font.Code
-        if ESPFonts.Loaded[ESPConfig.Font] then
-            label.FontFace = ESPFonts.Loaded[ESPConfig.Font]
-        end
-        label.TextSize = ESPConfig.TextSize
-        label.TextColor3 = ESPConfig.TextColor
-        label.TextStrokeTransparency = 1
-        label.ZIndex = 2
-        label.Parent = container
-
-        local stroke = Instance.new("UIStroke")
-        stroke.Thickness = 1
-        stroke.Color = ESPConfig.TextOutlineColor or ESPConfig.Outlines.Color
-        stroke.LineJoinMode = Enum.LineJoinMode.Miter
-        stroke.Enabled = ESPConfig.TextOutline
-        stroke.Parent = label
-        labelStrokeMap[label] = stroke
-    end
-
-    local nameText = Instance.new("TextLabel")
-    SetupLabel(nameText)
-    nameText.TextYAlignment = Enum.TextYAlignment.Bottom
-    nameText.RichText = true
-    nameText.Text = name
-    nameText.Visible = ESPConfig.Names
-    espObj.Text = nameText
-
-    espObj.TeamText = nil
-    espObj.TeamTextStroke = nil
-    espObj.FriendlyText = nil
-    espObj.FriendlyTextStroke = nil
-
-    local distText = Instance.new("TextLabel")
-    SetupLabel(distText)
-    distText.TextYAlignment = Enum.TextYAlignment.Top
-    distText.Visible = false
-    espObj.DistanceText = distText
-
-    local weaponText = Instance.new("TextLabel")
-    SetupLabel(weaponText)
-    weaponText.TextYAlignment = Enum.TextYAlignment.Top
-    weaponText.Visible = false
-    espObj.WeaponText = weaponText
-
-    local healthBarOutline = Instance.new("Frame")
-    healthBarOutline.BackgroundColor3 = ESPConfig.Outlines.Color
-    healthBarOutline.BorderSizePixel = 0
-    healthBarOutline.Visible = false
-    healthBarOutline.ZIndex = 1
-    healthBarOutline.Parent = container
-    espObj.HealthBarOutline = healthBarOutline
-
-    local healthBarContainer = Instance.new("Frame")
-    healthBarContainer.BackgroundTransparency = 1
-    healthBarContainer.ClipsDescendants = true
-    healthBarContainer.BorderSizePixel = 0
-    healthBarContainer.ZIndex = 2
-    healthBarContainer.Parent = healthBarOutline
-    espObj.HealthBarContainer = healthBarContainer
-
-    local healthBar = Instance.new("Frame")
-    healthBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    healthBar.BorderSizePixel = 0
-    healthBar.ZIndex = 2
-    healthBar.Parent = healthBarContainer
-    espObj.HealthBar = healthBar
-
-    local healthGradient = Instance.new("UIGradient")
-    healthGradient.Enabled = ESPConfig.HealthBar.Gradient.Enabled
-    healthGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, ESPConfig.HealthBar.Gradient.Color1),
-        ColorSequenceKeypoint.new(0.5, ESPConfig.HealthBar.Gradient.Color2),
-        ColorSequenceKeypoint.new(1, ESPConfig.HealthBar.Gradient.Color3)
+    local GetService = setmetatable({}, {
+        __index = function(_, Name)
+            return game:GetService(Name);
+        end;
     })
-    healthGradient.Parent = healthBar
-    espObj.HealthGradient = healthGradient
 
-    local healthText = Instance.new("TextLabel")
-    SetupLabel(healthText)
-    healthText.TextYAlignment = Enum.TextYAlignment.Center
-    healthText.ZIndex = 3
-    healthText.Visible = false
-    espObj.HealthText = healthText
+        local Workspace, Players, RunService, HttpService = GetService["Workspace"], GetService["Players"], GetService["RunService"], GetService["HttpService"];
+        local LocalPlayer, Camera = Players.LocalPlayer, Workspace.CurrentCamera;
+        local WorldToViewportPoint, FindFirstChildOfClass, FindFirstChild = Camera.WorldToViewportPoint, game.FindFirstChildOfClass, game.FindFirstChild;
 
-    for i = 1, 5 do -- Max 5 flags
-        local flag = Instance.new("TextLabel")
-        SetupLabel(flag)
-        flag.TextSize = ESPConfig.Flags.TextSize
-        flag.Font = _fontMap[ESPConfig.Flags.Font] or Enum.Font.Code
-        if ESPFonts.Loaded[ESPConfig.Flags.Font] then
-            flag.FontFace = ESPFonts.Loaded[ESPConfig.Flags.Font]
-        end
-        flag.Visible = false
-        espObj.FlagLabels[i] = flag
-    end
+        local NewVector3, NewVector2, Dim, Dim2, DimOffset = Vector3.new, Vector2.new, UDim.new, UDim2.new, UDim2.fromOffset;
+        local NumSeq = NumberSequence.new;
+        local NumKey = NumberSequenceKeypoint.new;
 
-    espObj.Bones = {}
-    espObj.BoneOutlines = {}
-    for i = 1, #SKELETON_BONE_DEFS do
-        local outline = Instance.new("Frame")
-        outline.BorderSizePixel = 0
-        outline.Visible = false
-        outline.ZIndex = 1
-        outline.Parent = container
-        espObj.BoneOutlines[i] = outline
+        local Format, Spawn, Clear, Floor, Clamp, Abs, Tan, Rad, Huge, Remove = string.format, task.spawn, table.clear, math.floor, math.clamp, math.abs, math.tan, math.rad, math.huge, table.remove;
+        local Frame, ZeroVector3, CameraPosition, FocalLength, ViewPortY, Updates = 1 / 60, NewVector3(0,0,0), NewVector3(0,0,0), 0, 0, 0;
 
-        local bone = Instance.new("Frame")
-        bone.BorderSizePixel = 0
-        bone.Visible = false
-        bone.ZIndex = 2
-        bone.Parent = container
-        espObj.Bones[i] = bone
-    end
-
-    local arrowInner = Instance.new("TextLabel")
-    arrowInner.BackgroundTransparency = 1
-    arrowInner.Text = "▲"
-    arrowInner.TextColor3 = ESPConfig.OffScreenArrows.Color
-    arrowInner.TextSize = ESPConfig.OffScreenArrows.Size
-    arrowInner.Font = Enum.Font.SourceSans
-    arrowInner.Size = UDim2.new(0, ESPConfig.OffScreenArrows.Size * 2, 0, ESPConfig.OffScreenArrows.Size * 2)
-    arrowInner.ZIndex = 100
-    arrowInner.Visible = false
-    arrowInner.Parent = ScreenGui
-    espObj.ArrowInner = arrowInner
-
-    local arrowOutline = Instance.new("TextLabel")
-    arrowOutline.BackgroundTransparency = 1
-    arrowOutline.Text = "▲"
-    arrowOutline.TextColor3 = ESPConfig.OffScreenArrows.OutlineColor
-    arrowOutline.TextSize = ESPConfig.OffScreenArrows.Size + 2
-    arrowOutline.Font = Enum.Font.SourceSans
-    arrowOutline.Size = UDim2.new(0, (ESPConfig.OffScreenArrows.Size + 2) * 2, 0, (ESPConfig.OffScreenArrows.Size + 2) * 2)
-    arrowOutline.ZIndex = 99
-    arrowOutline.Visible = false
-    arrowOutline.Parent = ScreenGui
-    espObj.ArrowOutline = arrowOutline
-
-    local function makeArrowLabel()
-        local l = Instance.new("TextLabel")
-        l.BackgroundTransparency = 1
-        l.Size = UDim2.new(0, 150, 0, 12)
-        l.TextStrokeTransparency = 1
-        l.ZIndex = 110
-        l.TextColor3 = Color3.fromRGB(255, 255, 255)
-        l.Visible = false
-        l.Parent = ScreenGui
-        local stroke = Instance.new("UIStroke")
-        stroke.Parent = l
-        labelStrokeMap[l] = stroke
-        return l
-    end
-    espObj.ArrowName = makeArrowLabel()
-    espObj.ArrowDist = makeArrowLabel()
-
-    espObj.Adornments = {}
-    espObj.Highlight = nil
-
-    espObj.Destroy = function()
-        container:Destroy()
-        if espObj.Highlight then espObj.Highlight:Destroy() end
-        if espObj.MeshShell then espObj.MeshShell:Destroy() end
-        for _, a in pairs(espObj.Adornments) do a:Destroy() end
-        if espObj.ArrowInner then espObj.ArrowInner:Destroy() end
-        if espObj.ArrowOutline then espObj.ArrowOutline:Destroy() end
-        if espObj.ArrowName then espObj.ArrowName:Destroy() end
-        if espObj.ArrowDist then espObj.ArrowDist:Destroy() end
-    end
-
-    return espObj
-end)
-
-local UpdateESPObj = LPHNoVirtualize(function(espObj, position, size, name, distanceStuds, instance, isCheap, nonHuman,
-                                              noStatus,
-                                              configOverride, onScreen)
-    local cfgCache = {}
-    local function GetCfg(path)
-        local cached = cfgCache[path]
-        if cached ~= nil then return cached end
-        local keys = path:split(".")
-        local current = configOverride
-        local default = ESPConfig
-
-        local foundOverride = true
-        for _, key in ipairs(keys) do
-            if type(current) == "table" and current[key] ~= nil then
-                current = current[key]
-            else
-                foundOverride = false
-                break
-            end
+        local function CameraCache()
+            ViewPortY = Camera.ViewportSize.Y;
+            CachedFocalLength = ViewPortY / (2 * Tan(Rad(Camera.FieldOfView) * 0.5));
         end
 
-        if foundOverride then
-            cfgCache[path] = current
-            return current
-        end
+        CameraCache();
 
-        local currentDefault = default
-        for _, key in ipairs(keys) do
-            if type(currentDefault) == "table" then
-                currentDefault = currentDefault[key]
-            else
-                currentDefault = nil
-                break
-            end
-        end
-        cfgCache[path] = currentDefault
-        return currentDefault
-    end
+        Camera:GetPropertyChangedSignal("FieldOfView"):Connect(CameraCache);
+        Camera:GetPropertyChangedSignal("ViewportSize"):Connect(CameraCache);
 
-    local _now = tick()
-    local humanoid = not nonHuman and instance:FindFirstChild("Humanoid") or nil
+getgenv().Library = {
+	['Directory'] = 'Esp',
+	['Cache'] = {},
+	['Holder'] = nil,
+	['Threads'] = {},
+	['Connections'] = {},
 
-    -- Chams logic
-    local isDead = (humanoid and humanoid.Health <= 0)
-    local chamsEnabled = GetCfg("Chams.Enabled")
-    if chamsEnabled and not isDead then
-        local chamType = GetCfg("Chams.Type")
-        if chamType == "Highlight" and (instance:IsA("Model") or instance:IsA("BasePart")) then
-            -- Clean up MeshChams
-            if espObj.MeshShell then
-                espObj.MeshShell:Destroy()
-                espObj.MeshShell = nil
-                espObj.MeshHighlight = nil
-            end
-            if not espObj.Highlight then
-                espObj.Highlight = Instance.new("Highlight")
-            end
-            local h = espObj.Highlight
-            h.Parent = ChamsContainer
-            h.Adornee = instance
-            h.FillColor = GetCfg("Chams.Highlight.FillColor")
-            h.FillTransparency = GetCfg("Chams.Highlight.FillTransparency")
-            h.OutlineColor = GetCfg("Chams.Highlight.OutlineColor")
-            h.OutlineTransparency = GetCfg("Chams.Highlight.OutlineTransparency")
-            h.DepthMode = GetCfg("Chams.Highlight.VisibleCheck") and Enum.HighlightDepthMode.Occluded or
-                Enum.HighlightDepthMode.AlwaysOnTop
-            h.Enabled = true
+	['Table'] = {
+		['Enabled'] = true,
+		['Distance'] = 7520,
 
-            -- Hide adornments if they exist
-            if espObj.Adornments then
-                for _, a in pairs(espObj.Adornments) do a.Visible = false end
-            end
-        elseif chamType == "Adornment" then
-            if espObj.Highlight then
-                espObj.Highlight:Destroy()
-                espObj.Highlight = nil
-            end
-            -- Clean up MeshChams
-            if espObj.MeshShell then
-                espObj.MeshShell:Destroy()
-                espObj.MeshShell = nil
-                espObj.MeshHighlight = nil
-            end
+		['Boxes'] = {
+			['Enabled'] = true,
 
-            local parts = instance:IsA("Model") and instance:GetChildren() or { instance }
-            local idx = 0
+			['Bounding Box'] = {
+				['Enabled'] = true,
+				['IncludeAcsessories'] = false,
+				['BoxX'] = 0,
+				['BoxY'] = 0,
+			},
 
-            local visCheck = GetCfg("Chams.Adornment.VisibleCheck")
-            local visRate = GetCfg("VisibilityCheckRate") or 0.1
-            local now = _now
-            local last = espObj.LastVisCheck or 0
-            local shouldUpdate = (now - last) > visRate
+			['Box Glow'] = {
+				['Enabled'] = true,
+				['Top'] = Color3.fromRGB(255, 255, 255),
+				['Bot'] = Color3.fromRGB(255, 255, 255),
+				['Transparency'] = {0.9, 0.9},
+			},
 
-            if visCheck and shouldUpdate then
-                espObj.LastVisCheck = now
-                local ignore = { UIContainer }
-                if LocalPlayer.Character then table.insert(ignore, LocalPlayer.Character) end
-                if instance:IsA("Model") then
-                    for _, v in ipairs(instance:GetDescendants()) do table.insert(ignore, v) end
-                else
-                    table.insert(ignore, instance)
+			['Gradients'] = {
+				['Top'] = Color3.fromRGB(255, 255, 255),
+				['Bot'] = Color3.fromRGB(255, 255, 255),
+			},
+
+			['Filled'] = {
+				['Enabled'] = true,
+				['Top'] = Color3.fromRGB(255, 255, 255),
+				['Bot'] = Color3.fromRGB(255, 255, 255),
+				['Transparency'] = {1, 0.8},
+			},
+		},
+
+		['Bars'] = {
+			['Health Bar'] = {
+				['Enabled'] = true,
+				['Top'] = Color3.fromRGB(0, 255, 0),
+				['Mid'] = Color3.fromRGB(255, 170, 0),
+				['Bot'] = Color3.fromRGB(255, 0, 0),
+			},
+
+			['Armor Bar'] = {
+				['Enabled'] = false,
+				['Top'] = Color3.fromRGB(255, 255, 255),
+				['Mid'] = Color3.fromRGB(220, 220, 220),
+				['Bot'] = Color3.fromRGB(180, 180, 180),
+			},
+		},
+
+		['Texts'] = {
+			['Name'] = {
+       ['Enabled'] = true,
+				['Color'] = Color3.fromRGB(255, 255, 255),
+			},
+
+			['Distance'] = {
+				['Enabled'] = true,
+				['Color'] = Color3.fromRGB(255, 255, 255),
+			},
+
+			['Weapon'] = {
+				['Enabled'] = true,
+				['Color'] = Color3.fromRGB(255, 255, 255),
+			},
+		},
+	}
+}
+        local Table = Library['Table'];
+
+        local Fonts = {}; do
+            local function FontsRegister(Name, Weight, Style, Asset)
+                if not isfile(Asset.Id) then
+                    writefile(Asset.Id, Asset.Font)
                 end
 
-                local root = instance:IsA("Model") and
-                    (instance.PrimaryPart or instance:FindFirstChild("HumanoidRootPart") or instance:FindFirstChildWhichIsA("BasePart")) or
-                    instance
-                if root and root:IsA("BasePart") then
-                    local obscuring = Camera:GetPartsObscuringTarget({ root.Position }, ignore)
-                    espObj.CachedModelVisible = (#obscuring == 0)
-                end
-            end
-
-            local occludedColor = GetCfg("Chams.Adornment.Color")
-            local visibleColor = GetCfg("Chams.Adornment.VisibleColor")
-            local finalColor = (visCheck and espObj.CachedModelVisible) and visibleColor or occludedColor
-
-            for _, p in ipairs(parts) do
-                if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
-                    idx = idx + 1
-                    local a = espObj.Adornments[idx]
-                    if not a then
-                        a = Instance.new("BoxHandleAdornment")
-                        a.Name = "Cham"
-                        a.Parent = ChamsContainer
-                        espObj.Adornments[idx] = a
-                    end
-
-                    a.Adornee = p
-                    a.Size = p.Size
-                    a.Color3 = finalColor
-                    a.Transparency = GetCfg("Chams.Adornment.Transparency")
-                    a.AlwaysOnTop = GetCfg("Chams.Adornment.AlwaysOnTop")
-                    a.ZIndex = 10
-                    a.Visible = true
-                end
-            end
-            -- Hide excess adornments beyond what the current part count needs
-            for i = idx + 1, #espObj.Adornments do
-                espObj.Adornments[i].Visible = false
-            end
-        elseif chamType == "MeshChams" then
-            -- MeshChams only creates on actual player characters (including LocalPlayer if enabled).
-            -- Directory entries, NPCs, and objects are all rejected even if they have a Humanoid.
-            local playerOwner = Players:GetPlayerFromCharacter(instance)
-            if not playerOwner then
-                if espObj.MeshShell then
-                    espObj.MeshShell:Destroy()
-                    espObj.MeshShell = nil
-                    espObj.MeshHighlight = nil
-                end
-            else
-                -- Hide unneeded cham types
-                if espObj.Highlight then
-                    espObj.Highlight:Destroy()
-                    espObj.Highlight = nil
-                end
-                if espObj.Adornments then
-                    for _, a in pairs(espObj.Adornments) do a.Visible = false end
+                if isfile(Name .. ".font") then
+                    delfile(Name .. ".font")
                 end
 
-                -- Build the shell model if it doesn't exist yet (or was parented away)
-                if not espObj.MeshShell or not espObj.MeshShell.Parent then
-                    if espObj.MeshShell then
-                        espObj.MeshShell:Destroy()
-                        espObj.MeshShell = nil
-                        espObj.MeshHighlight = nil
-                    end
+                local Info = {
+                    name = Name,
+                    faces = {
+                        {
+                            name = "Normal",
+                            weight = Weight,
+                            style = Style,
+                            assetId = getcustomasset(Asset.Id),
+                        },
+                    },
+                }
 
-                    CleanupCharacterMeshChams(instance)
+                writefile(Name .. ".font", HttpService:JSONEncode(Info))
+                return getcustomasset(Name .. ".font")
+            end;
 
-                    local r6Parts      = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }
-                    local r15Parts     = {
-                        "Head", "UpperTorso", "LowerTorso",
-                        "LeftUpperArm", "LeftLowerArm", "LeftHand",
-                        "RightUpperArm", "RightLowerArm", "RightHand",
-                        "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-                        "RightUpperLeg", "RightLowerLeg", "RightFoot",
-                    }
-                    local humanoidInst = instance:FindFirstChild("Humanoid")
-                    local isR15        = humanoidInst and (humanoidInst.RigType == Enum.HumanoidRigType.R15)
-                    local bodyParts    = isR15 and r15Parts or r6Parts
-
-                    local shellModel   = Instance.new("Model")
-                    shellModel.Name    = "ChamShells"
-                    shellModel:SetAttribute("SensoryESP_MeshCham", true)
-                    shellModel:SetAttribute("SensoryESP_RunId", CurrentRunId)
-                    shellModel.Parent = instance
-
-                    for _, partName in ipairs(bodyParts) do
-                        local realPart = instance:FindFirstChild(partName)
-                        if realPart and realPart:IsA("BasePart") then
-                            local shell = Instance.new("Part")
-                            shell.Name  = "ChamShell_" .. partName
-                            shell:SetAttribute("SensoryESP_MeshCham", true)
-                            shell:SetAttribute("SensoryESP_RunId", CurrentRunId)
-                            shell.Size         = realPart.Size * 1.015
-                            shell.Transparency = 0.9999999
-                            shell.CastShadow   = false
-                            shell.CanCollide   = false
-                            shell.CanQuery     = false
-                            shell.CanTouch     = false
-                            shell.Anchored     = false
-                            shell.Massless     = true
-                            shell.CFrame       = realPart.CFrame
-                            shell.Parent       = shellModel
-
-                            local weld         = Instance.new("Weld")
-                            weld.Part0         = shell
-                            weld.Part1         = realPart
-                            weld.C0            = CFrame.new()
-                            weld.C1            = CFrame.new()
-                            weld.Parent        = shell
-                        end
-                    end
-
-                    -- Single Highlight covers the whole shell model, giving a mesh-like silhouette
-                    local hl = Instance.new("Highlight")
-                    hl.Name  = "ChamShellHighlight"
-                    hl:SetAttribute("SensoryESP_MeshCham", true)
-                    hl:SetAttribute("SensoryESP_RunId", CurrentRunId)
-                    hl.Adornee           = shellModel
-                    hl.Parent            = shellModel
-                    espObj.MeshShell     = shellModel
-                    espObj.MeshHighlight = hl
-                end
-
-                -- Update Highlight properties every frame
-                if espObj.MeshHighlight then
-                    local hl               = espObj.MeshHighlight
-                    hl.FillColor           = GetCfg("Chams.MeshChams.FillColor")
-                    hl.FillTransparency    = GetCfg("Chams.MeshChams.FillTransparency")
-                    hl.OutlineColor        = GetCfg("Chams.MeshChams.OutlineColor")
-                    hl.OutlineTransparency = GetCfg("Chams.MeshChams.OutlineTransparency")
-                    hl.DepthMode           = GetCfg("Chams.MeshChams.VisibleCheck")
-                        and Enum.HighlightDepthMode.Occluded
-                        or Enum.HighlightDepthMode.AlwaysOnTop
-                    hl.Enabled             = true
-                end
-            end
-        end
-    else
-        -- Chams disabled or dead, hide all
-        if espObj.Highlight then
-            espObj.Highlight:Destroy()
-            espObj.Highlight = nil
-        end
-        if espObj.Adornments then
-            for _, a in pairs(espObj.Adornments) do a.Visible = false end
-        end
-        if espObj.MeshShell then
-            espObj.MeshShell:Destroy()
-            espObj.MeshShell = nil
-            espObj.MeshHighlight = nil
-        end
-    end
-
-    local function ApplyTextOutline(label, style, color)
-        local stroke = labelStrokeMap[label] or label:FindFirstChildOfClass("UIStroke")
-        if not stroke then return end
-        if style == "None" then
-            stroke.Enabled = false
-        elseif style == "Shadow" then
-            stroke.Enabled = true
-            stroke.Thickness = 1
-            stroke.Color = color or Color3.fromRGB(0, 0, 0)
-        else
-            stroke.Enabled = true
-            stroke.Thickness = 1
-            stroke.Color = color or Color3.fromRGB(0, 0, 0)
-        end
-    end
-
-    -- Off-screen arrows (orbit at fixed pixel radius from screen center)
-    if espObj.ArrowInner and GetCfg("OffScreenArrows.Enabled") and instance:IsA("Model") then
-        local rp = instance.PrimaryPart or instance:FindFirstChild("HumanoidRootPart") or instance:FindFirstChildWhichIsA("BasePart")
-        if rp then
-            local sp = Camera:WorldToViewportPoint(rp.Position)
-            local vp = Camera.ViewportSize
-            local cx, cy = vp.X / 2, vp.Y / 2
-            local onVp = sp.Z > 0 and sp.X >= 0 and sp.X <= vp.X and sp.Y >= 0 and sp.Y <= vp.Y
-            if not onVp then
-                local orbit = GetCfg("OffScreenArrows.OrbitRadius")
-                local nx, ny, rot
-                if GetCfg("OffScreenArrows.ArrowMode") == "Compass" then
-                    -- Compass: top-down from LocalPlayer's HumanoidRootPart
-                    local playerRoot = LocalPlayer.Character and (
-                        LocalPlayer.Character:FindFirstChild("HumanoidRootPart") or
-                        LocalPlayer.Character:FindFirstChild("Torso") or
-                        LocalPlayer.Character:FindFirstChildWhichIsA("BasePart")
-                    )
-                    local fromPos = playerRoot and playerRoot.Position or Camera.CFrame.Position
-                    local toTarget = (Vector3.new(rp.Position.X, 0, rp.Position.Z) - Vector3.new(fromPos.X, 0, fromPos.Z)).Unit
-                    local rel = playerRoot and playerRoot.CFrame:VectorToObjectSpace(toTarget) or toTarget
-                    nx, ny = rel.X, rel.Z
-                    rot = math.deg(math.atan2(rel.Z, rel.X)) + 90
-                else
-                    -- Camera: direction from camera
-                    local dir = (rp.Position - Camera.CFrame.Position).Unit
-                    local viewDir = Camera.CFrame:VectorToObjectSpace(dir)
-                    nx, ny = viewDir.X, -viewDir.Y
-                    rot = math.deg(math.atan2(-viewDir.Y, viewDir.X)) + 90
-                end
-                local d = math.sqrt(nx * nx + ny * ny)
-                if d > 0.001 then
-                    nx, ny = nx / d, ny / d
-                else
-                    nx, ny = 0, -1
-                end
-                local ax, ay = cx + nx * orbit, cy + ny * orbit
-                local sz = GetCfg("OffScreenArrows.Size")
-                local col = GetCfg("OffScreenArrows.Color")
-
-                if GetCfg("OffScreenArrows.Outline") then
-                    espObj.ArrowOutline.TextSize = sz + 2
-                    espObj.ArrowOutline.TextColor3 = GetCfg("OffScreenArrows.OutlineColor")
-                    espObj.ArrowOutline.Position = UDim2.new(0, ax - sz - 2, 0, ay - sz - 2)
-                    espObj.ArrowOutline.Rotation = rot
-                    espObj.ArrowOutline.Visible = true
-                else
-                    espObj.ArrowOutline.Visible = false
-                end
-
-                local arrowFontObj = _fontMap[GetCfg("OffScreenArrows.Font")] or Enum.Font.SourceSans
-                espObj.ArrowInner.Text = "▲"
-                espObj.ArrowInner.Font = arrowFontObj
-                espObj.ArrowInner.TextSize = sz
-                espObj.ArrowInner.TextColor3 = col
-                espObj.ArrowInner.Position = UDim2.new(0, ax - sz, 0, ay - sz)
-                espObj.ArrowInner.Size = UDim2.new(0, sz * 2, 0, sz * 2)
-                espObj.ArrowInner.Rotation = rot
-                espObj.ArrowInner.Visible = true
-
-                -- Arrow name + distance (separate sub-configs)
-                local textY = ay + sz + 4
-
-                if GetCfg("OffScreenArrows.Names.Enabled") and name and name ~= "" then
-                    local nFont = GetCfg("OffScreenArrows.Names.Font")
-                    local nTxtSz = GetCfg("OffScreenArrows.Names.TextSize")
-                    local nFontObj = _fontMap[nFont] or Enum.Font.Code
-                    local nFontLoaded = ESPFonts.Loaded[nFont]
-                    local nSide = GetCfg("OffScreenArrows.Names.Side")
-                    local nGap = GetCfg("OffScreenArrows.Names.Gap") or 4
-                    local nCol = GetCfg("OffScreenArrows.Names.Color")
-                    local nOut = GetCfg("OffScreenArrows.Names.Outline")
-                    local nOutCol = GetCfg("OffScreenArrows.Names.OutlineColor")
-                    espObj.ArrowName.Font = nFontObj
-                    if nFontLoaded then espObj.ArrowName.FontFace = nFontLoaded end
-                    espObj.ArrowName.TextSize = nTxtSz
-                    espObj.ArrowName.TextColor3 = nCol
-                    espObj.ArrowName.Text = name
-                    if nSide == "Top" then
-                        espObj.ArrowName.Position = UDim2.new(0, ax - 75, 0, ay - sz - nGap - nTxtSz)
-                    elseif nSide == "Left" then
-                        espObj.ArrowName.Position = UDim2.new(0, ax - sz - nGap - 150, 0, ay - 6)
-                    elseif nSide == "Right" then
-                        espObj.ArrowName.Position = UDim2.new(0, ax + sz + nGap, 0, ay - 6)
-                    else
-                        espObj.ArrowName.Position = UDim2.new(0, ax - 75, 0, textY)
-                        textY = textY + nTxtSz + 1
-                    end
-                    ApplyTextOutline(espObj.ArrowName, nOut and "Full" or "None", nOutCol or Color3.fromRGB(0, 0, 0))
-                    espObj.ArrowName.Visible = true
-                else
-                    espObj.ArrowName.Visible = false
-                end
-
-                if GetCfg("OffScreenArrows.Distance.Enabled") then
-                    local dFont = GetCfg("OffScreenArrows.Distance.Font")
-                    local dTxtSz = GetCfg("OffScreenArrows.Distance.TextSize")
-                    local dFontObj = _fontMap[dFont] or Enum.Font.Code
-                    local dFontLoaded = ESPFonts.Loaded[dFont]
-                    local dSide = GetCfg("OffScreenArrows.Distance.Side")
-                    local dGap = GetCfg("OffScreenArrows.Distance.Gap") or 2
-                    local dCol = GetCfg("OffScreenArrows.Distance.Color")
-                    local dOut = GetCfg("OffScreenArrows.Distance.Outline")
-                    local dOutCol = GetCfg("OffScreenArrows.Distance.OutlineColor")
-                    local dUnit = GetCfg("Distance.Unit")
-                    local dVal
-                    if dUnit == "Meters" then
-                        dVal = math.floor(distanceStuds / GetCfg("Distance.StudsPerMeter"))
-                    else
-                        dVal = math.floor(distanceStuds)
-                    end
-                    espObj.ArrowDist.Font = dFontObj
-                    if dFontLoaded then espObj.ArrowDist.FontFace = dFontLoaded end
-                    espObj.ArrowDist.TextSize = dTxtSz
-                    espObj.ArrowDist.TextColor3 = dCol
-                    espObj.ArrowDist.Text = dVal .. GetCfg("Distance.Ending")
-                    if dSide == "Top" then
-                        espObj.ArrowDist.Position = UDim2.new(0, ax - 75, 0, ay - sz - dGap - dTxtSz)
-                    elseif dSide == "Left" then
-                        espObj.ArrowDist.Position = UDim2.new(0, ax - sz - dGap - 150, 0, ay - 6)
-                    elseif dSide == "Right" then
-                        espObj.ArrowDist.Position = UDim2.new(0, ax + sz + dGap, 0, ay - 6)
-                    else
-                        espObj.ArrowDist.Position = UDim2.new(0, ax - 75, 0, textY)
-                    end
-                    ApplyTextOutline(espObj.ArrowDist, dOut and "Full" or "None", dOutCol or Color3.fromRGB(0, 0, 0))
-                    espObj.ArrowDist.Visible = true
-                else
-                    espObj.ArrowDist.Visible = false
-                end
-            else
-                espObj.ArrowInner.Visible = false
-                espObj.ArrowOutline.Visible = false
-                espObj.ArrowName.Visible = false
-                espObj.ArrowDist.Visible = false
-            end
-        else
-            espObj.ArrowInner.Visible = false
-            espObj.ArrowOutline.Visible = false
-            espObj.ArrowName.Visible = false
-            espObj.ArrowDist.Visible = false
-        end
-    else
-        if espObj.ArrowInner then
-            espObj.ArrowInner.Visible = false
-            espObj.ArrowOutline.Visible = false
-            espObj.ArrowName.Visible = false
-            espObj.ArrowDist.Visible = false
-        end
-    end
-
-    if not onScreen or not position or not size then
-        espObj.Container.Visible = false
-        return
-    end
-
-    espObj.Container.Visible = true
-    espObj.Container.ZIndex = nonHuman and 1 or 10
-    if GetCfg("Names") then
-        espObj.Text.Text = name
-    end
-
-    local textOutlineStyle = GetCfg("TextOutlineStyle")
-    -- Backward compat: if TextOutline is explicitly false, treat as None
-    if GetCfg("TextOutline") == false then textOutlineStyle = "None" end
-    local textOutlineColor = GetCfg("TextOutlineColor") or GetCfg("Outlines.Color")
-
-    local t = GetCfg("BoxThickness")
-    local o = GetCfg("Outlines.Thickness")
-    local textSize = GetCfg("TextSize")
-    local textColor = GetCfg("TextColor")
-    local fontName = GetCfg("Font")
-    local fontObj = _fontMap[fontName] or Enum.Font.Code
-    local fontLoaded = ESPFonts.Loaded[fontName]
-    local boxColor = GetCfg("BoxColor")
-    -- Update Label Properties
-    espObj.Text.TextSize = textSize
-    espObj.Text.TextColor3 = textColor
-    espObj.Text.Font = fontObj
-    if fontLoaded then
-        espObj.Text.FontFace = fontLoaded
-    end
-    ApplyTextOutline(espObj.Text, textOutlineStyle, textOutlineColor)
-
-    do
-        local distFont = GetCfg("Distance.Font")
-        local distFontObj = _fontMap[distFont] or Enum.Font.Code
-        espObj.DistanceText.TextSize = GetCfg("Distance.TextSize") or textSize
-        espObj.DistanceText.TextColor3 = GetCfg("Distance.Color")
-        espObj.DistanceText.Font = distFontObj
-        if ESPFonts.Loaded[distFont] then
-            espObj.DistanceText.FontFace = ESPFonts.Loaded[distFont]
-        end
-        ApplyTextOutline(espObj.DistanceText, GetCfg("Distance.OutlineStyle") or textOutlineStyle, textOutlineColor)
-    end
-
-    do
-        local wepFont = GetCfg("Weapon.Font")
-        local wepFontObj = _fontMap[wepFont] or Enum.Font.Code
-        espObj.WeaponText.TextSize = GetCfg("Weapon.TextSize") or textSize
-        espObj.WeaponText.TextColor3 = GetCfg("Weapon.Color")
-        espObj.WeaponText.Font = wepFontObj
-        if ESPFonts.Loaded[wepFont] then
-            espObj.WeaponText.FontFace = ESPFonts.Loaded[wepFont]
-        end
-        ApplyTextOutline(espObj.WeaponText, GetCfg("Weapon.OutlineStyle") or textOutlineStyle, textOutlineColor)
-    end
-
-    local px, py = math.floor(position.X), math.floor(position.Y)
-    local sx, sy = math.floor(size.X), math.floor(size.Y)
-    local x, y = math.floor(px - sx / 2), math.floor(py - sy / 2)
-
-    -- Get Health Early for Layout Offsets
-    local health, maxHealth, healthPercent = 100, 100, 1
-    if humanoid then
-        health = humanoid.Health
-        maxHealth = humanoid.MaxHealth
-        healthPercent = maxHealth > 0 and math.clamp(health / maxHealth, 0, 1) or 0
-    end
-
-    -- Offsets for HealthBar
-    local topOffset = 0
-    local bottomOffset = 0
-    local leftOffset = 0
-    local rightOffset = 0
-    if GetCfg("HealthBar.Enabled") and instance:IsA("Model") and humanoid then
-        local hpPos = GetCfg("HealthBar.Position")
-        local thickness = GetCfg("HealthBar.Width") + 2 + GetCfg("HealthBar.SideGap")
-        local isRight = GetCfg("Flags.Position") == "Right"
-        local textExtra = (GetCfg("HealthBar.ShowText") and health < maxHealth) and 20 or 0
-
-        if hpPos == "Top" then
-            topOffset = thickness
-        elseif hpPos == "Bottom" then
-            bottomOffset = thickness
-        elseif hpPos == "Left" then
-            leftOffset = thickness + textExtra
-        elseif hpPos == "Right" then
-            rightOffset = thickness + textExtra
-        end
-    end
-
-    if isCheap then
-        for i = 1, 4 do
-            espObj.Lines[i].Visible = false
-            espObj.Outlines[i].Visible = false
-        end
-        espObj.HealthBarOutline.Visible = false
-        espObj.HealthText.Visible = false
-        espObj.WeaponText.Visible = false
-        for _, l in ipairs(espObj.FlagLabels) do l.Visible = false end
-
-        local distUnit = GetCfg("Distance.Unit")
-        local distVal = distanceStuds
-        if distUnit == "Meters" then
-            distVal = math.floor(distanceStuds / GetCfg("Distance.StudsPerMeter"))
-        else
-            distVal = math.floor(distanceStuds)
-        end
-
-        espObj.Text.Text = name .. " " .. distVal .. GetCfg("Distance.Ending")
-        espObj.Text.Position = UDim2.new(0, px - 50, 0, py - (textSize / 2))
-        espObj.Text.Visible = GetCfg("Names")
-        espObj.DistanceText.Visible = false
-        return
-    end
-
-    -- Top
-    espObj.Lines[1].Position = UDim2.new(0, x, 0, y)
-    espObj.Lines[1].Size = UDim2.new(0, sx, 0, t)
-    -- Bottom
-    espObj.Lines[2].Position = UDim2.new(0, x, 0, y + sy)
-    espObj.Lines[2].Size = UDim2.new(0, sx + t, 0, t)
-    -- Left
-    espObj.Lines[3].Position = UDim2.new(0, x, 0, y)
-    espObj.Lines[3].Size = UDim2.new(0, t, 0, sy)
-    -- Right
-    espObj.Lines[4].Position = UDim2.new(0, x + sx, 0, y)
-    espObj.Lines[4].Size = UDim2.new(0, t, 0, sy + t)
-
-    local boxesEnabled = GetCfg("Boxes")
-    local boxType = GetCfg("BoxType") or "Normal"
-    local useCornerBoxes = boxType == "Corner"
-
-    local outlineStyle = GetCfg("Outlines.Style")
-    local outlineColor = GetCfg("Outlines.Color")
-    local outlineThickness = GetCfg("Outlines.Thickness")
-    -- Backward compat: if Enabled is explicitly false, treat as None
-    if GetCfg("Outlines.Enabled") == false then outlineStyle = "None" end
-    local outlineTransparency = 0
-    local hasOutline = outlineStyle ~= "None"
-
-    if useCornerBoxes then
-        local cornerWidth = math.max(math.floor(sx * 0.25), t * 3)
-        local cornerHeight = math.max(math.floor(sy * 0.25), t * 3)
-
-        local cornerData = {
-            { x,                        y,                         cornerWidth, t },
-            { x,                        y,                         t,           cornerHeight },
-            { x + sx - cornerWidth + t, y,                         cornerWidth, t },
-            { x + sx,                   y,                         t,           cornerHeight },
-            { x,                        y + sy,                    cornerWidth, t },
-            { x,                        y + sy - cornerHeight + t, t,           cornerHeight },
-            { x + sx - cornerWidth + t, y + sy,                    cornerWidth, t },
-            { x + sx,                   y + sy - cornerHeight + t, t,           cornerHeight },
-        }
-
-        for i = 1, 8 do
-            local data = cornerData[i]
-            espObj.CornerLines[i].Position = UDim2.new(0, data[1], 0, data[2])
-            espObj.CornerLines[i].Size = UDim2.new(0, data[3], 0, data[4])
-        end
-    end
-
-    for i = 1, 4 do
-        espObj.Lines[i].Visible = boxesEnabled and not useCornerBoxes
-        espObj.Outlines[i].Visible = boxesEnabled and hasOutline and not useCornerBoxes
-
-        espObj.Outlines[i].Position = UDim2.new(0, -outlineThickness, 0, -outlineThickness)
-        espObj.Outlines[i].Size = UDim2.new(1, outlineThickness * 2, 1, outlineThickness * 2)
-        espObj.Outlines[i].BackgroundTransparency = outlineTransparency
-        espObj.Lines[i].BackgroundColor3 = boxColor
-        espObj.Outlines[i].BackgroundColor3 = outlineColor
-    end
-
-    for i = 1, 8 do
-        espObj.CornerLines[i].Visible = boxesEnabled and useCornerBoxes
-        espObj.CornerOutlines[i].Visible = boxesEnabled and hasOutline and useCornerBoxes
-
-        espObj.CornerOutlines[i].Position = UDim2.new(0, -outlineThickness, 0, -outlineThickness)
-        espObj.CornerOutlines[i].Size = UDim2.new(1, outlineThickness * 2, 1, outlineThickness * 2)
-        espObj.CornerOutlines[i].BackgroundTransparency = outlineTransparency
-        espObj.CornerLines[i].BackgroundColor3 = boxColor
-        espObj.CornerOutlines[i].BackgroundColor3 = outlineColor
-    end
-
-    -- BoxFill logic
-    local fill = espObj.BoxFill
-    local grad = espObj.BoxFillGradient
-    if GetCfg("BoxFill.Enabled") and boxesEnabled then
-        fill.Visible = true
-        fill.Position = UDim2.new(0, x, 0, y)
-        fill.Size = UDim2.new(0, sx, 0, sy)
-        fill.BackgroundTransparency = GetCfg("BoxFill.Transparency")
-
-        if GetCfg("BoxFill.Gradient.Enabled") then
-            grad.Enabled = true
-            local bgC1 = GetCfg("BoxFill.Gradient.Color1")
-            local bgC2 = GetCfg("BoxFill.Gradient.Color2")
-            local bgC3 = GetCfg("BoxFill.Gradient.Color3")
-            grad.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, bgC1),
-                ColorSequenceKeypoint.new(0.5, bgC2),
-                ColorSequenceKeypoint.new(1, bgC3)
+            Fonts.Tahoma = FontsRegister("Tahoma", 400, "Normal", {
+                Id = "Tahoma.ttf",
+                Font = game:HttpGet("https://github.com/i77lhm/storage/raw/refs/heads/main/fonts/fs-tahoma-8px.ttf"),
             })
 
-            local rot = GetCfg("BoxFill.Gradient.Rotation")
-            if GetCfg("BoxFill.Gradient.Animated") then
-                local speed = GetCfg("BoxFill.Gradient.Speed")
-                local dir = GetCfg("BoxFill.Gradient.Direction") == "Left" and -1 or 1
-                rot = (rot + (_now * speed * dir)) % 360
+            
+			Fonts.XPTahoma = FontsRegister("XPTahoma", 400, "Normal", {
+                Id = "Tahoma8PTBOLD.ttf",
+                Font = game:HttpGet("https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/TAHOMA-8PT-BOLD-WINDOWS-XP.TTF"),
+            })
+
+            Fonts.SmallestPixel = FontsRegister("SmallestPixel", 400, "Normal", {
+				Id = "smallest_pixel-7.ttf",
+				Font = game:HttpGet("https://raw.githubusercontent.com/sametexe001/luas/main/smallest_pixel-7.ttf")
+			})
+
+            Fonts.ProggyTiny = FontsRegister("ProggyTiny", 400, "Normal", {
+				Id = "ProggyTinyyyy.ttf",
+				Font = game:HttpGet("https://github.com/i77lhm/storage/raw/refs/heads/main/fonts/ProggyTiny.ttf")
+			})
+
+            Fonts.ProggyClean = FontsRegister("ProggyClean", 400, "Normal", {
+                Id = "ProggyClean.ttf",
+                Font = game:HttpGet("https://github.com/i77lhm/storage/raw/main/fonts/ProggyClean.ttf"),
+            })
+            Library.ProggyTiny = Font.new(Fonts.ProggyClean, Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+			Library.TahomaBold = Font.new(Fonts.XPTahoma, Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+            Library.ProggyClean = Font.new(Fonts.ProggyClean, Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+            Library.Tahoma = Font.new(Fonts.Tahoma, Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+            Library.SmallestPixel = Font.new(Fonts.SmallestPixel, Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+        end
+
+        Library.__index = Library; print("hello")
+
+        function Library:CreateObjects(Name, Prop)
+            local New = Instance.new(Name);
+
+            for Property, Value in Prop or {} do
+                New[Property] = Value;
+            end;
+			
+            return New;
+        end
+
+        function Library:CreateThreads(Name, Signal, Callback)
+            local Connection = Signal:Connect(Callback);
+            self.Threads[Name] = Connection;
+            return Connection;
+        end
+
+        Library.Holder = Library:CreateObjects("ScreenGui", {
+            Name = "\n",
+            Parent = gethui(),
+            ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets,
+            ZIndexBehavior = Enum.ZIndexBehavior.Global,
+            ResetOnSpawn = false,
+            DisplayOrder = 10000,
+            IgnoreGuiInset = true,
+        })
+
+        function Library:InitEsp(Data)
+            local Objects = Data.Objects
+
+            do
+                Objects["TargetHolder"] = self:CreateObjects("Frame", {
+                    Parent = self.Holder,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["TopHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["TargetHolder"],
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    AnchorPoint = NewVector2(0, 1),
+                    Position = Dim2(0, -2, 0, -5),
+                    Size = Dim2(1, 4, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BottomHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["TargetHolder"],
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, -2, 1, 3),
+                    Size = Dim2(1, 4, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["LeftHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["TargetHolder"],
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    AnchorPoint = NewVector2(1, 0),
+                    Position = Dim2(0, -5, 0, -2),
+                    Size = Dim2(0, 0, 1, 4),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["RightHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["TargetHolder"],
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(1, 5, 0, -2),
+                    Size = Dim2(0, 0, 1, 4),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
             end
-            grad.Rotation = rot
-            fill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        else
-            grad.Enabled = false
-            fill.BackgroundColor3 = GetCfg("BoxFill.Color")
-        end
-    else
-        fill.Visible = false
-    end
 
-    local nameY = y - textSize - (GetCfg("TextGap") or 0) - topOffset
-    local teamOwner = instance:IsA("Model") and Players:GetPlayerFromCharacter(instance) or nil
-    local leftTags = {}
-    local rightTags = {}
+            do
+                Objects["TopTextHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["TopHolder"],
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
 
-    if GetCfg("TeamIndicator.Enabled") and teamOwner and teamOwner.Team then
-        local teamColor = GetCfg("TeamIndicator.UseTeamColor") and teamOwner.TeamColor.Color or
-        GetCfg("TeamIndicator.Color")
-        local teamName = teamOwner.Team.Name
-        local compactTeam = GetCfg("TeamIndicator.Compact") and CompactTeamName(teamName) or teamName
-        local teamTag = string.format('<font color="%s">[%s]</font>', ColorToHex(teamColor), compactTeam)
-        if GetCfg("TeamIndicator.Position") == "Left" then
-            table.insert(leftTags, teamTag)
-        else
-            table.insert(rightTags, teamTag)
-        end
-    end
+                Objects["BottomTextHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BottomHolder"],
+                    LayoutOrder = 2,
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
 
-    local isFriendly = false
-    if teamOwner and GetCfg("FriendlyIndicator.Enabled") then
-        if GetCfg("FriendlyIndicator.CheckTeam") and LocalPlayer.Team ~= nil and teamOwner.Team == LocalPlayer.Team then
-            isFriendly = true
-        end
-        if not isFriendly and GetCfg("FriendlyIndicator.CheckFriends") then
-            local ok, result = pcall(function()
-                return LocalPlayer:IsFriendsWith(teamOwner.UserId)
-            end)
-            if ok and result then
-                isFriendly = true
+                Objects["LeftTextHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["LeftHolder"],
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["RightTextHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["RightHolder"],
+                    LayoutOrder = 2,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+            end
+
+            do
+                Objects["LeftBarHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["LeftHolder"],
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 0, 1, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BottomBarHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BottomHolder"],
+                    LayoutOrder = 0,
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+            end
+
+            do
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["TopTextHolder"],
+                    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                    Padding = Dim(0, 1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["BottomTextHolder"],
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                    Padding = Dim(0, -1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["LeftTextHolder"],
+                    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+                    Padding = Dim(0, 0),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["RightTextHolder"],
+                    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+                    Padding = Dim(0, 0),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["LeftBarHolder"],
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+                    Padding = Dim(0, 5),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["BottomBarHolder"],
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                    Padding = Dim(0, 5),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["TopHolder"],
+                    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+                    Padding = Dim(0, 1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["BottomHolder"],
+                    Padding = Dim(0, 1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["LeftHolder"],
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+                    Padding = Dim(0, 1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+
+                self:CreateObjects("UIListLayout", {
+                    Parent = Objects["RightHolder"],
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+                    Padding = Dim(0, 1),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                })
+            end
+
+            do
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["TopTextHolder"],
+                    PaddingBottom = Dim(0, 0),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["BottomTextHolder"],
+                    PaddingTop = Dim(0, -1)
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["LeftTextHolder"],
+                    PaddingTop = Dim(0, -3),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["RightTextHolder"],
+                    PaddingTop = Dim(0, -3),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["LeftBarHolder"],
+                    PaddingRight = Dim(0, 0),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["BottomBarHolder"],
+                    PaddingTop = Dim(0, 2),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["LeftHolder"],
+                    PaddingRight = Dim(0, 1),
+                })
+            end
+
+            do
+                Objects["BoxGlow"] = self:CreateObjects("ImageLabel", {
+                    Parent = Objects["TargetHolder"],
+                    Image = "rbxassetid://110204605000367",
+                    ScaleType = Enum.ScaleType.Slice,
+                    SliceCenter = Rect.new(NewVector2(21, 21), NewVector2(79, 79)),
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    ImageTransparency = 0.65,
+                    ResampleMode = Enum.ResamplerMode.Pixelated,
+                    Visible = true,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, -21, 0, -21),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BoxGlowGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["BoxGlow"],
+                    Rotation = 90,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 0, 0)),
+                        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0)),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 0), NumKey(1, 0)}),
+                })
+
+                self:CreateObjects("UIPadding", {
+                    Parent = Objects["BoxGlow"],
+                    PaddingTop = Dim(0, 21),
+                    PaddingBottom = Dim(0, 20),
+                    PaddingLeft = Dim(0, 21),
+                    PaddingRight = Dim(0, 20),
+                })
+
+                Objects["BoxOutlineHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BoxGlow"],
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BoxOutline"] = self:CreateObjects("UIStroke", {
+                    Parent = Objects["BoxOutlineHolder"],
+                    Thickness = 3,
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["BoxOutlineGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["BoxOutline"],
+                    Rotation = 90,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 0, 0)),
+                        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0)),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 0), NumKey(1, 0)}),
+                })
+
+                Objects["BoxInlineHolder"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BoxGlow"],
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    Position = Dim2(0, -1, 0, -1),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BoxInline"] = self:CreateObjects("UIStroke", {
+                    Parent = Objects["BoxInlineHolder"],
+                    Color = Color3.fromRGB(255, 255, 255),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["BoxInlineGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["BoxInline"],
+                    Rotation = 90,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 0, 0)),
+                        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 0), NumKey(1, 0)}),
+                })
+
+                Objects["BoxFill"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BoxGlow"],
+                    Visible = false,
+                    BackgroundTransparency = 0,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 0, 0, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["BoxFillGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["BoxFill"],
+                    Rotation = 90,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 0, 0)),
+                        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 1), NumKey(1, 1)}),
+                })
+            end
+
+            do
+                Objects["HealthBarOutline"] = self:CreateObjects("Frame", {
+                    Parent = Objects["LeftBarHolder"],
+                    ZIndex = 5,
+                    LayoutOrder = 0,
+                    Visible = false,
+                    BackgroundTransparency = 0,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(0, 1, 1, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+                    ClipsDescendants = false,
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["HealthBarOutline"],
+                    Thickness = 1,
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["HealthBar"] = self:CreateObjects("Frame", {
+                    Parent = Objects["HealthBarOutline"],
+                    ZIndex = 6,
+                    AnchorPoint = NewVector2(0, 1),
+                    Position = Dim2(0, 0, 1, 0),
+                    Size = Dim2(1, 0, 1, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                    ClipsDescendants = true,
+                })
+
+                Objects["HealthBarGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["HealthBar"],
+                    Rotation = 90,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Table['Bars']['Health Bar']['Top']),
+                        ColorSequenceKeypoint.new(0.5, Table['Bars']['Health Bar']['Mid']),
+                        ColorSequenceKeypoint.new(1, Table['Bars']['Health Bar']['Bot']),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 0), NumKey(1, 0)}),
+                })
+
+                Objects["HealthBarText"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["HealthBarOutline"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    ZIndex = 10,
+                    TextColor3 = Color3.fromRGB(255, 255, 255),
+                    Text = "",
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    TextYAlignment = Enum.TextYAlignment.Center,
+                    AnchorPoint = NewVector2(0.5, 0.5),
+                    Position = Dim2(0.5, 0, 1, 0),
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["HealthBarText"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["ArmorBarOutline"] = self:CreateObjects("Frame", {
+                    Parent = Objects["BottomBarHolder"],
+                    ZIndex = 5,
+                    LayoutOrder = 0,
+                    Visible = false,
+                    BackgroundTransparency = 0,
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 0, 1),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+                    ClipsDescendants = true,
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["ArmorBarOutline"],
+                    Thickness = 1,
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["ArmorBar"] = self:CreateObjects("Frame", {
+                    Parent = Objects["ArmorBarOutline"],
+                    ZIndex = 6,
+                    AnchorPoint = NewVector2(0, 0),
+                    Position = Dim2(0, 0, 0, 0),
+                    Size = Dim2(1, 0, 1, 0),
+                    BorderSizePixel = 0,
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                })
+
+                Objects["ArmorBarGradient"] = self:CreateObjects("UIGradient", {
+                    Parent = Objects["ArmorBar"],
+                    Rotation = 0,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Table['Bars']['Armor Bar']['Top']),
+                        ColorSequenceKeypoint.new(0.5, Table['Bars']['Armor Bar']['Mid']),
+                        ColorSequenceKeypoint.new(1, Table['Bars']['Armor Bar']['Bot']),
+                    }),
+                    Transparency = NumSeq({NumKey(0, 0), NumKey(1, 0)}),
+                })
+
+                Objects["ArmorBarText"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["ArmorBar"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    ZIndex = 10,
+                    TextColor3 = Color3.fromRGB(255, 255, 255),
+                    Text = "",
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    AnchorPoint = NewVector2(0.5, 0.5),
+                    Position = Dim2(0.5, 0, 0.5, 0),
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["ArmorBarText"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+            end
+
+            do
+                Objects["TargetName"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["TopTextHolder"],
+                    FontFace = Library.TahomaBold,
+                    TextSize = 12,
+                    LayoutOrder = 2,
+                    TextColor3 = Table['Texts']['Name']['Color'],
+                    Text = "",
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    ZIndex = 5,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["TargetName"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["Distance"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["BottomTextHolder"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    LayoutOrder = 2,
+                    TextColor3 = Table['Texts']['Distance']['Color'],
+                    Text = "",
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    ZIndex = 5,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["Distance"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["WalkFlag"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["RightTextHolder"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    LayoutOrder = 1,
+                    TextColor3 = Color3.fromRGB(255, 0, 0),
+                    Text = "Walking",
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    ZIndex = 5,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["WalkFlag"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["JumpFlag"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["RightTextHolder"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    LayoutOrder = 2,
+                    TextColor3 = Color3.fromRGB(255, 0, 0),
+                    Text = "Jumping",
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    ZIndex = 5,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["JumpFlag"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
+
+                Objects["Weapon"] = self:CreateObjects("TextLabel", {
+                    Parent = Objects["BottomTextHolder"],
+                    FontFace = Library.SmallestPixel,
+                    TextSize = 9,
+                    LayoutOrder = 3,
+                    TextColor3 = Table['Texts']['Weapon']['Color'],
+                    Text = "none",
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    BorderSizePixel = 0,
+                    Visible = false,
+                    BackgroundTransparency = 1,
+                    ZIndex = 5,
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Size = Dim2(0, 0, 0, 0),
+                })
+
+                self:CreateObjects("UIStroke", {
+                    Parent = Objects["Weapon"],
+                    Color = Color3.fromRGB(0, 0, 0),
+                    LineJoinMode = Enum.LineJoinMode.Miter,
+                })
             end
         end
-    end
 
-    if isFriendly then
-        local friendlyTag = string.format('<font color="%s">%s</font>', ColorToHex(GetCfg("FriendlyIndicator.Color")),
-            GetCfg("FriendlyIndicator.Text"))
-        if GetCfg("FriendlyIndicator.Position") == "Left" then
-            table.insert(leftTags, friendlyTag)
-        else
-            table.insert(rightTags, friendlyTag)
-        end
-    end
+        function Library:CalculateBox(Data)
+            local RootPart = Data['RootPart']
 
-    local finalNameText = name
-    if #leftTags > 0 then
-        finalNameText = table.concat(leftTags, " ") .. " " .. finalNameText
-    end
-    if #rightTags > 0 then
-        finalNameText = finalNameText .. " " .. table.concat(rightTags, " ")
-    end
+            if not RootPart then
+                return nil, nil, nil, nil, false;
+            end;
 
-    if GetCfg("Names") then
-        espObj.Text.Text = finalNameText
-        espObj.Text.Position = UDim2.new(0, px - 50, 0, nameY)
-        espObj.Text.Visible = true
-    else
-        espObj.Text.Visible = false
-    end
+            local RootScreen, OnScreen = WorldToViewportPoint(Camera, RootPart.Position)
 
-    local distGap = GetCfg("Distance.Gap") or 0
-    local currentBottomY = y + sy + distGap + bottomOffset
-    if GetCfg("Distance.Enabled") then
-        espObj.DistanceText.Visible = true
-        espObj.DistanceText.Position = UDim2.new(0, px - 50, 0, currentBottomY)
+            if not OnScreen then
+                return nil, nil, nil, nil, false;
+            end;
 
-        local distUnit = GetCfg("Distance.Unit")
-        local distVal = distanceStuds
-        if distUnit == "Meters" then
-            distVal = math.floor(distanceStuds / GetCfg("Distance.StudsPerMeter"))
-        else
-            distVal = math.floor(distanceStuds)
-        end
-        espObj.DistanceText.Text = distVal .. GetCfg("Distance.Ending")
-        currentBottomY = currentBottomY + (GetCfg("Distance.TextSize") or textSize) + (GetCfg("Weapon.Gap") or 0)
-    else
-        espObj.DistanceText.Visible = false
-    end
+            local BoundingBox = Table['Boxes']['Bounding Box'];
 
-    -- Weapon logic
-    if GetCfg("Weapon.Enabled") then
-        local weaponName = nil
+            if BoundingBox['Enabled'] then
+                local Children = Data['Children'];
 
-        -- Simple 'Holding' check
-        local holding = instance:FindFirstChild("Holding")
-        if holding then
-            if holding:IsA("ValueBase") then
-                if holding.Value then
-                    weaponName = tostring(holding.Value)
-                end
+                if not Children then
+                    return nil, nil, nil, nil, false;
+                end;
+
+                local IncludeAccessories = Data['IncludeAccessories'];
+                local ScrMinX, ScrMinY = Huge, Huge;
+                local ScrMaxX, ScrMaxY = -Huge, -Huge;
+                local HasValidParts = false;
+
+                for _, Part in Children do
+                    if Part:IsA('BasePart') and Part.Transparency ~= 1 and Part ~= RootPart then
+                        local Parent = Part.Parent
+
+                        if Parent == nil then
+                            continue
+                        end
+
+                        if not IncludeAccessories and Parent:IsA('Accessory') then
+                            continue;
+                        end;
+
+                        local PartScreen, PartOnScreen = WorldToViewportPoint(Camera, Part.Position);
+
+                        if not PartOnScreen or PartScreen.Z <= 0 then
+                            continue;
+                        end;
+
+                        HasValidParts = true;
+
+                        local Cf = Part.CFrame;
+                        local Sz = Part.Size;
+                        local HX, HY, HZ = Sz.X * 0.5, Sz.Y * 0.5, Sz.Z * 0.5;
+                        local RX, UY, LZ = Cf.RightVector, Cf.UpVector, Cf.LookVector;
+                        local DepthScale = CachedFocalLength / PartScreen.Z;
+
+                        local Ex = (Abs(RX.X * HX) + Abs(UY.X * HY) + Abs(LZ.X * HZ)) * DepthScale;
+                        local Ey = (Abs(RX.Y * HX) + Abs(UY.Y * HY) + Abs(LZ.Y * HZ)) * DepthScale;
+
+                        local PMinX, PMaxX = PartScreen.X - Ex, PartScreen.X + Ex;
+                        local PMinY, PMaxY = PartScreen.Y - Ey, PartScreen.Y + Ey;
+
+                        if PMinX < ScrMinX then ScrMinX = PMinX; end
+                        if PMaxX > ScrMaxX then ScrMaxX = PMaxX; end
+                        if PMinY < ScrMinY then ScrMinY = PMinY; end
+                        if PMaxY > ScrMaxY then ScrMaxY = PMaxY; end
+                    end;
+                end;
+
+                if not HasValidParts then
+                    return nil, nil, nil, nil, false;
+                end;
+
+                local PadX = BoundingBox['BoxX'];
+                local PadY = BoundingBox['BoxY'];
+                local W = (ScrMaxX - ScrMinX) + PadX;
+                local H = (ScrMaxY - ScrMinY) + PadY;
+
+                return W, H, ScrMinX - (PadX * 0.5), ScrMinY - (PadY * 0.5), true;
             else
-                weaponName = holding.Name
+                local Scale = (RootPart.Size.Y * ViewPortY) / (RootScreen.Z * 2);
+                local W, H = 3 * Scale, 4.5 * Scale;
+                return W, H, RootScreen.X - (W * 0.5), RootScreen.Y - (H * 0.5), OnScreen;
             end
         end
 
-        -- Fallback
-        if (not weaponName or weaponName == "" or weaponName == "nil") and GetCfg("Weapon.UseToolFallback") then
-            local tool = instance:FindFirstChildWhichIsA("Tool")
-            if tool then weaponName = tool.Name end
-        end
+        function Library:AddTarget(Player)
+            if Player == LocalPlayer then
+                return
+            end;
 
-        if weaponName and weaponName ~= "" and weaponName ~= "nil" then
-            espObj.WeaponText.Visible = true
-            espObj.WeaponText.Text = weaponName
-            espObj.WeaponText.Position = UDim2.new(0, px - 50, 0, currentBottomY)
-        else
-            espObj.WeaponText.Visible = false
-        end
-    else
-        espObj.WeaponText.Visible = false
-    end
+            if self.Cache[Player] then
+                return
+            end;
 
-    -- HealthBar logic
-    if GetCfg("HealthBar.Enabled") and instance:IsA("Model") and humanoid then
-        -- Positioning
-        local hpPos = GetCfg("HealthBar.Position")
-        local isHorizontal = (hpPos == "Top" or hpPos == "Bottom")
-        local hpWidth = GetCfg("HealthBar.Width")
-        local hpSideGap = GetCfg("HealthBar.SideGap")
-        local hpTextFollowBar = GetCfg("HealthBar.TextFollowBar")
+            local Data = {
+                ['Player'] = Player,
+                ['Objects'] = {},
+                ['Conns'] = {},
+                ['Character'] = nil,
+                ['RootPart'] = nil,
+                ['Humanoid'] = nil,
+                ['Children'] = nil,
+                ['Health'] = 0,
+                ['MaxHealth'] = 100,
+                ['Armor'] = 100,
+                ['MaxArmor'] = 100,
+                ['CurrentTool'] = nil,
+                ['Alive'] = false,
+                ['LastW'] = nil,
+                ['LastH'] = nil,
+                ['LastX'] = nil,
+                ['LastY'] = nil,
+                ['WalkActive'] = false,
+                ['JumpActive'] = false,
+                ['IncludeAccessories'] = Table['Boxes']['Bounding Box']['IncludeAcsessories'],
+                ['LastGlowTop'] = nil,
+                ['LastGlowBot'] = nil,
+                ['LastGlowT1'] = nil,
+                ['LastGlowT2'] = nil,
+                ['LastGradTop'] = nil,
+                ['LastGradBot'] = nil,
+                ['LastFillTop'] = nil,
+                ['LastFillBot'] = nil,
+                ['LastFillT1'] = nil,
+                ['LastFillT2'] = nil,
+                ['LastDist'] = nil,
+                ['LastDistColor'] = nil,
+                ['LastDisplayName'] = nil,
+                ['LastNameColor'] = nil,
+                ['LastHealthTop'] = nil,
+                ['LastHealthMid'] = nil,
+                ['LastHealthBot'] = nil,
+                ['LastHealthFloor'] = nil,
+                ['LastRatio'] = nil,
+                ['LastArmorTop'] = nil,
+                ['LastArmorMid'] = nil,
+                ['LastArmorBot'] = nil,
+                ['LastArmorFloor'] = nil,
+                ['LastArmorRatio'] = nil,
+                ['LastWeapon'] = nil,
+                ['LastWeaponColor'] = nil,
+            }
+            self:InitEsp(Data);
+            self['Cache'][Player] = Data;
 
-        local hpOutlineStyle = GetCfg("HealthBar.Outline.Style")
-        -- Backward compat: if Enabled is explicitly false, treat as None
-        if GetCfg("HealthBar.Outline.Enabled") == false then hpOutlineStyle = "None" end
-        espObj.HealthBarOutline.Visible = hpOutlineStyle ~= "None"
-        espObj.HealthBarOutline.BackgroundTransparency = 0
-        espObj.HealthBarOutline.BackgroundColor3 = GetCfg("HealthBar.Outline.Color")
-        local barWidth
-
-        if isHorizontal then
-            barWidth = math.floor((sx + 1) * healthPercent)
-            espObj.HealthBarOutline.Size = UDim2.new(0, sx + 3, 0, hpWidth + 2)
-
-            if hpPos == "Top" then
-                espObj.HealthBarOutline.Position = UDim2.new(0, x - 1, 0,
-                    y - o - hpSideGap - hpWidth - 1)
-            else -- Bottom
-                espObj.HealthBarOutline.Position = UDim2.new(0, x - 1, 0, y + sy + o + hpSideGap)
-            end
-
-            espObj.HealthBarContainer.Size = UDim2.new(0, barWidth, 0, hpWidth)
-            espObj.HealthBarContainer.Position = UDim2.new(0, 1, 0, 1)
-
-            espObj.HealthBar.Size = UDim2.new(0, sx + 1, 0, hpWidth)
-            espObj.HealthBar.Position = UDim2.new(0, 0, 0, 0)
-        else -- Vertical
-            local barHeight = math.floor((sy + 1) * healthPercent)
-            espObj.HealthBarOutline.Size = UDim2.new(0, hpWidth + 2, 0, sy + 3)
-
-            if hpPos == "Left" then
-                espObj.HealthBarOutline.Position = UDim2.new(0,
-                    x - o - hpSideGap - hpWidth - 1, 0, y - 1)
-            else -- Right
-                espObj.HealthBarOutline.Position = UDim2.new(0, x + sx + o + hpSideGap, 0, y - 1)
-            end
-
-            espObj.HealthBarContainer.Size = UDim2.new(0, hpWidth, 0, barHeight)
-            espObj.HealthBarContainer.Position = UDim2.new(0, 1, 0, (sy + 1) - barHeight + 1)
-
-            espObj.HealthBar.Size = UDim2.new(0, hpWidth, 0, sy + 1)
-            espObj.HealthBar.Position = UDim2.new(0, 0, 0, -(sy + 1 - barHeight))
-        end
-
-        -- Color & Gradient
-        local gradientEnabled = GetCfg("HealthBar.Gradient.Enabled")
-        local showText = GetCfg("HealthBar.ShowText")
-        if GetCfg("HealthBar.HideWhenFullHP") and health >= maxHealth then
-            showText = false
-        end
-        local followColorText = showText and GetCfg("HealthBar.FollowGradientColorText")
-        local healthColor = Color3.fromHSV(healthPercent * 0.3, 1, 1)
-
-        if gradientEnabled and not isHorizontal then
-            espObj.HealthGradient.Rotation = 90
-            espObj.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-
-            if followColorText then
-                if healthPercent > 0.5 then
-                    local ratio = (1 - healthPercent) * 2
-                    healthColor = GetCfg("HealthBar.Gradient.Color1"):Lerp(GetCfg("HealthBar.Gradient.Color2"), ratio)
-                else
-                    local ratio = (0.5 - healthPercent) * 2
-                    healthColor = GetCfg("HealthBar.Gradient.Color2"):Lerp(GetCfg("HealthBar.Gradient.Color3"), ratio)
-                end
-            end
-        else
-            espObj.HealthBar.BackgroundColor3 = healthColor
-        end
-
-        if showText then
-            espObj.HealthText.Visible = true
-            espObj.HealthText.Text = math.floor(health)
-            espObj.HealthText.TextSize = GetCfg("HealthBar.TextSize")
-            local hpFont = GetCfg("HealthBar.Font")
-            local hpFontObj = _fontMap[hpFont] or Enum.Font.Code
-            espObj.HealthText.Font = hpFontObj
-            if ESPFonts.Loaded[hpFont] then
-                espObj.HealthText.FontFace = ESPFonts.Loaded[hpFont]
-            end
-            espObj.HealthText.TextColor3 = followColorText and healthColor or GetCfg("TextColor")
-            ApplyTextOutline(espObj.HealthText, hpOutlineStyle, textOutlineColor)
-
-            if isHorizontal then
-                barWidth = math.floor((sx + 1) * healthPercent)
-                local barLeftX = x + barWidth - 1
-                local textY = espObj.HealthBarOutline.Position.Y.Offset
-
-                espObj.HealthText.TextXAlignment = Enum.TextXAlignment.Center
-                espObj.HealthText.Size = UDim2.new(0, 0, 0, 0)
-
-                if hpTextFollowBar then
-                    espObj.HealthText.Position = UDim2.new(0, barLeftX, 0, textY + (hpWidth / 2) + 1)
-                else
-                    espObj.HealthText.Position = UDim2.new(0, x + sx, 0, textY + (hpWidth / 2) + 1)
-                end
-            else
-                local barHeight = math.floor((sy + 1) * healthPercent)
-                local barOutlineX = espObj.HealthBarOutline.Position.X.Offset
-                local barTopY = y + (sy + 1) - barHeight
-
-                espObj.HealthText.TextXAlignment = hpPos == "Left" and Enum.TextXAlignment.Right or
-                    Enum.TextXAlignment.Left
-                espObj.HealthText.Size = UDim2.new(0, 0, 0, 0)
-
-                local textX = hpPos == "Left" and (barOutlineX - 2) or (barOutlineX + hpWidth + 4)
-                local textY = hpTextFollowBar and barTopY or y
-                espObj.HealthText.Position = UDim2.new(0, textX, 0, textY)
-            end
-        else
-            espObj.HealthText.Visible = false
-        end
-    else
-        espObj.HealthBarOutline.Visible = false
-        espObj.HealthText.Visible = false
-    end
-
-    -- Flags logic
-    for _, label in ipairs(espObj.FlagLabels) do label.Visible = false end
-    if GetCfg("Flags.Enabled") and instance:IsA("Model") and not noStatus and humanoid then
-            local state = humanoid:GetState()
-            local isMoving = humanoid.MoveDirection.Magnitude > 0
-            local isJumping = (state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.FallingDown or state == Enum.HumanoidStateType.Freefall)
-            local isSwimming = state == Enum.HumanoidStateType.Swimming
-            local flagOptionsMoving = GetCfg("Flags.Options.Moving")
-            local flagOptionsJumping = GetCfg("Flags.Options.Jumping")
-            local flagOptionsSwimming = GetCfg("Flags.Options.Swimming")
-            local flagOptionsIdle = GetCfg("Flags.Options.Idle")
-            local flagColorsMoving = GetCfg("Flags.Colors.Moving")
-            local flagColorsJumping = GetCfg("Flags.Colors.Jumping")
-            local flagColorsSwimming = GetCfg("Flags.Colors.Swimming")
-            local flagColorsIdle = GetCfg("Flags.Colors.Idle")
-            local flagFont = GetCfg("Flags.Font")
-            local flagTextSize = GetCfg("Flags.TextSize")
-            local flagTextGap = GetCfg("Flags.TextGap")
-            local flagGap = GetCfg("Flags.Gap") or 2
-            local flagSideGap = GetCfg("Flags.SideGap")
-            local flagPosition = GetCfg("Flags.Position")
-            local flags = {}
-
-            if isMoving and isJumping and flagOptionsMoving and flagOptionsJumping then
-                table.insert(flags, { text = "Moving & Jumping", color = flagColorsMoving })
-            elseif isJumping and flagOptionsJumping then
-                table.insert(flags, { text = "Jumping", color = flagColorsJumping })
-            elseif isMoving and flagOptionsMoving then
-                table.insert(flags, { text = "Moving", color = flagColorsMoving })
-            elseif isSwimming and flagOptionsSwimming then
-                table.insert(flags, { text = "Swimming", color = flagColorsSwimming })
-            elseif flagOptionsIdle then
-                table.insert(flags, { text = "Idle", color = flagColorsIdle })
-            end
-
-            local isRight = flagPosition == "Right"
-            local fx = isRight and (x + sx + flagSideGap + rightOffset) or
-                (x - 100 - flagSideGap - leftOffset)
-            local fy = y - flagGap
-
-            if flagFont == "Smallest Pixel-7" then
-                fy = fy - 3
-            end
-
-            local flagsFontObj = _fontMap[flagFont] or Enum.Font.Code
-            local flagsFontLoaded = ESPFonts.Loaded[flagFont]
-            local flagOutlineStyle = GetCfg("Flags.OutlineStyle") or textOutlineStyle
-
-            for i, data in ipairs(flags) do
-                local label = espObj.FlagLabels[i]
-                if label then
-                    label.Visible = true
-                    label.Text = data.text
-                    label.TextColor3 = data.color
-                    label.Font = flagsFontObj
-                    if flagsFontLoaded then
-                        label.FontFace = flagsFontLoaded
+            local HealthHandler = {}; do
+                function HealthHandler.BindHealth(Humanoid)
+                    if Data['Conns']['Health'] then
+                        Data['Conns']['Health']:Disconnect()
                     end
-                    label.TextSize = flagTextSize
-                    label.TextXAlignment = isRight and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
-                    label.Position = UDim2.new(0, fx, 0,
-                        fy + (i - 1) * (flagTextSize + flagTextGap))
-                    ApplyTextOutline(label, flagOutlineStyle, textOutlineColor)
-                end
-        end
-    end
 
-    -- Skeleton logic (Frame-based)
-    if GetCfg("Skeleton.Enabled") and instance:IsA("Model") then
-        local skeletonOutline = GetCfg("Skeleton.Outline")
-        local skeletonColor = GetCfg("Skeleton.Color")
-        local skeletonOutlineColor = GetCfg("Skeleton.OutlineColor")
+                    if Data['Conns']['Died'] then
+                        Data['Conns']['Died']:Disconnect()
+                    end
 
-        local bonePositions = {}
-        for _, def in ipairs(SKELETON_BONE_DEFS) do
-            for _, bn in ipairs(def) do
-                if bonePositions[bn] == nil then
-                    local wp = GetBonePosition(instance, bn)
-                    local sp, on = wp and WtS(Camera, wp)
-                    bonePositions[bn] = (wp and on) and Vector2.new(sp.X, sp.Y) or false
-                end
-            end
-        end
+                    Data['Humanoid'] = Humanoid
+                    Data['Health'] = Humanoid.Health
+                    Data['MaxHealth'] = Humanoid.MaxHealth
+                    Data['Alive'] = Humanoid.Health > 0
 
-        for i, def in ipairs(SKELETON_BONE_DEFS) do
-            local pA = bonePositions[def[1]]
-            local pB = bonePositions[def[2]]
+                    Data['Conns']['Health'] = Humanoid.HealthChanged:Connect(function(NewHealth)
+                        Data['Alive'] = NewHealth > 0
+                        Data['Health'] = NewHealth
+                    end)
 
-            if pA and pB then
-                if skeletonOutline then
-                    DrawLine(espObj.BoneOutlines[i], pA, pB, 3, skeletonOutlineColor)
-                else
-                    espObj.BoneOutlines[i].Visible = false
+                    Data['Conns']['Died'] = Humanoid.Died:Connect(function()
+                        Data['Alive'] = false
+                    end)
                 end
 
-                DrawLine(espObj.Bones[i], pA, pB, 1, skeletonColor)
-            else
-                espObj.Bones[i].Visible = false
-                espObj.BoneOutlines[i].Visible = false
+                Data['BindHealth'] = HealthHandler.BindHealth;
             end
-        end
-    else
-        if espObj.Bones then
-            for _, b in ipairs(espObj.Bones) do b.Visible = false end
-            for _, b in ipairs(espObj.BoneOutlines) do b.Visible = false end
-        end
-    end
-end)
---
 
---// logic
-local Get2DBoundingBox = LPHNoVirtualize(function(instance)
-    local rootPart
-    if instance:IsA("Model") then
-        rootPart = instance:FindFirstChild("HumanoidRootPart") or instance:FindFirstChild("Torso") or
-            instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
-    elseif instance:IsA("BasePart") then
-        rootPart = instance
-    end
+            local ToolHandler = {}; do
+                function ToolHandler.BindTool(Character)
+                    if Data['Conns']['ToolAdded'] then
+                        Data['Conns']['ToolAdded']:Disconnect()
+                    end
 
-    if not rootPart then return false, nil, nil end
+                    if Data['Conns']['ToolRemoved'] then
+                        Data['Conns']['ToolRemoved']:Disconnect()
+                    end
 
-    local position, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
-    if not onScreen then return false, nil, nil end
-
-    if not ESPConfig.DynamicBoxes then
-        -- STATIC BOX (No Jitter)
-        local humanoid = instance:IsA("Model") and instance:FindFirstChild("Humanoid")
-        if humanoid then
-            -- Specialized player math for perfect stability
-            local isR6 = humanoid.RigType == Enum.HumanoidRigType.R6
-            local topOffset = isR6 and 2.8 or 3.0
-            local bottomOffset = isR6 and 3.0 or 3.5
-
-            local topPos = rootPart.Position + Vector3.new(0, topOffset, 0)
-            local bottomPos = rootPart.Position - Vector3.new(0, bottomOffset, 0)
-            local top2D = Camera:WorldToViewportPoint(topPos)
-            local bottom2D = Camera:WorldToViewportPoint(bottomPos)
-            local height = math.abs(top2D.Y - bottom2D.Y)
-            return true, Vector2.new(position.X, (top2D.Y + bottom2D.Y) / 2), Vector2.new(height * 0.65, height)
-        end
-
-        -- Standard Static Object projection
-        local cf, size
-        if instance:IsA("Model") then
-            cf, size = instance:GetBoundingBox()
-        else
-            cf, size = instance.CFrame, instance.Size
-        end
-
-        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
-        local corners = {
-            cf * Vector3.new(size.X / 2, size.Y / 2, size.Z / 2),
-            cf * Vector3.new(-size.X / 2, size.Y / 2, size.Z / 2),
-            cf * Vector3.new(size.X / 2, -size.Y / 2, size.Z / 2),
-            cf * Vector3.new(-size.X / 2, -size.Y / 2, size.Z / 2),
-            cf * Vector3.new(size.X / 2, size.Y / 2, -size.Z / 2),
-            cf * Vector3.new(-size.X / 2, size.Y / 2, -size.Z / 2),
-            cf * Vector3.new(size.X / 2, -size.Y / 2, -size.Z / 2),
-            cf * Vector3.new(-size.X / 2, -size.Y / 2, -size.Z / 2),
-        }
-        for _, corner in ipairs(corners) do
-            local screenPos = Camera:WorldToViewportPoint(corner)
-            if screenPos.X < minX then minX = screenPos.X end
-            if screenPos.X > maxX then maxX = screenPos.X end
-            if screenPos.Y < minY then minY = screenPos.Y end
-            if screenPos.Y > maxY then maxY = screenPos.Y end
-        end
-        return true, Vector2.new((minX + maxX) / 2, (minY + maxY) / 2), Vector2.new(maxX - minX, maxY - minY)
-    else
-        -- DYNAMIC BOX
-        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
-        local parts = {}
-        if instance:IsA("Model") then
-            local includeAll = ESPConfig.DynamicBoxesIncludeAll
-            for _, v in ipairs(instance:GetChildren()) do
-                if v:IsA("BasePart") and (includeAll or (v.Name ~= "HumanoidRootPart" and v.Transparency ~= 1)) then
-                    table.insert(parts, v)
-                end
-            end
-        else
-            table.insert(parts, instance)
-        end
-
-        if #parts == 0 then return false, nil, nil end
-
-        if ESPConfig.DynamicBoxesCheap then
-            for _, part in ipairs(parts) do
-                local cf, size = part.CFrame, part.Size
-                local hs = size / 2
-                local p1 = cf * Vector3.new(hs.X, hs.Y, hs.Z)
-                local p2 = cf * Vector3.new(-hs.X, -hs.Y, -hs.Z)
-                local s1 = Camera:WorldToViewportPoint(p1)
-                local s2 = Camera:WorldToViewportPoint(p2)
-                if s1.X < minX then minX = s1.X end
-                if s1.X > maxX then maxX = s1.X end
-                if s1.Y < minY then minY = s1.Y end
-                if s1.Y > maxY then maxY = s1.Y end
-                if s2.X < minX then minX = s2.X end
-                if s2.X > maxX then maxX = s2.X end
-                if s2.Y < minY then minY = s2.Y end
-                if s2.Y > maxY then maxY = s2.Y end
-            end
-        else
-            for _, part in ipairs(parts) do
-                local cf, size = part.CFrame, part.Size
-                local corners = {
-                    cf * Vector3.new(size.X / 2, size.Y / 2, size.Z / 2),
-                    cf * Vector3.new(-size.X / 2, size.Y / 2, size.Z / 2),
-                    cf * Vector3.new(size.X / 2, -size.Y / 2, size.Z / 2),
-                    cf * Vector3.new(-size.X / 2, -size.Y / 2, size.Z / 2),
-                    cf * Vector3.new(size.X / 2, size.Y / 2, -size.Z / 2),
-                    cf * Vector3.new(-size.X / 2, size.Y / 2, -size.Z / 2),
-                    cf * Vector3.new(size.X / 2, -size.Y / 2, -size.Z / 2),
-                    cf * Vector3.new(-size.X / 2, -size.Y / 2, -size.Z / 2),
-                }
-                for _, corner in ipairs(corners) do
-                    local screenPos = Camera:WorldToViewportPoint(corner)
-                    if screenPos.X < minX then minX = screenPos.X end
-                    if screenPos.X > maxX then maxX = screenPos.X end
-                    if screenPos.Y < minY then minY = screenPos.Y end
-                    if screenPos.Y > maxY then maxY = screenPos.Y end
-                end
-            end
-        end
-        return true, Vector2.new((minX + maxX) / 2, (minY + maxY) / 2), Vector2.new(maxX - minX, maxY - minY)
-    end
-end)
---
-
---// custom functions logic
-local function CheckContains(instance, containsList)
-    if type(containsList) ~= "table" or #containsList == 0 then return true end
-    if #containsList == 1 and containsList[1] == "" then return true end
-    for _, containName in ipairs(containsList) do
-        local found = false
-        for _, child in ipairs(instance:GetChildren()) do
-            if child.Name == containName then
-                found = true
-                break
-            end
-        end
-        if not found then return false end
-    end
-    return true
-end
-
-local function CheckNames(instance, namesList)
-    if type(namesList) ~= "table" or #namesList == 0 then return true end
-    if #namesList == 1 and namesList[1] == "" then return true end
-    for _, name in ipairs(namesList) do
-        if instance.Name == name then
-            return true
-        end
-    end
-    return false
-end
-
-local function CheckBlockNames(inst, blockList)
-    if not blockList or #blockList == 0 then return false end
-    local current = inst
-    while current and current ~= game do
-        for _, name in ipairs(blockList) do
-            if name ~= "" and current.Name:find(name) then
-                return true
-            end
-        end
-        current = current.Parent
-    end
-    return false
-end
-
-local ScanDirectories = LPHNoVirtualize(function()
-    local newTracked = {}
-
-    if ESPConfig.Players then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if not ESPConfig.LocalPlayer and player == LocalPlayer then continue end
-            if player.Character then
-                local humanoid = player.Character:FindFirstChild("Humanoid")
-                if humanoid and humanoid.Health > 0 then
-                    newTracked[player.Character] = { name = player.Name, Cheap = false }
-                end
-            end
-        end
-    end
-
-    for key, config in pairs(ESPConfig.Directories) do
-        local displayName = nil
-        if type(config) == "table" and config.DisplayName and config.DisplayName ~= "" then
-            displayName = config.DisplayName
-        elseif type(key) == "string" then
-            displayName = key
-        end
-
-        if type(config) == "string" then
-            local inst = GetInstanceFromPath(config)
-            if inst then
-                newTracked[inst] = { name = displayName or inst.Name, Cheap = false }
-            end
-        elseif type(config) == "table" then
-            local path = config.Path
-            if not path then continue end
-            local inst = GetInstanceFromPath(path)
-            if not inst then continue end
-
-            local isCheap = config.Cheap or false
-            local nonHuman = config.NonHuman or false
-            local noStatus = config.NoStatus or false
-            local customConfig = config.Config or {}
-            local isRecursive = config.Recursive or false
-
-            if config.Multiple then
-                local children = isRecursive and inst:GetDescendants() or inst:GetChildren()
-                for _, child in ipairs(children) do
-                    if (child:IsA("Model") or child:IsA("BasePart")) then
-                        -- Optimization: If we already tracked an ancestor of this object in this scan, skip it
-                        local hasTrackedAncestor = false
-                        local p = child.Parent
-                        while p and p ~= inst and p ~= game do
-                            if newTracked[p] then
-                                hasTrackedAncestor = true
+                    if Data['Children'] then
+                        for _, Child in Data['Children'] do
+                            if Child:IsA('Tool') then
+                                Data['CurrentTool'] = Child.Name
                                 break
                             end
-                            p = p.Parent
                         end
+                    end
 
-                        if not hasTrackedAncestor and CheckNames(child, config.Names) and CheckContains(child, config.Contains) and not CheckBlockNames(child, config.BlockNames) then
-                            local humanoid = child:FindFirstChild("Humanoid")
-                            if nonHuman or (not humanoid or humanoid.Health > 0) then
-                                local actualName = (displayName and displayName ~= "") and displayName or child.Name
-                                newTracked[child] = {
-                                    name = actualName,
-                                    Cheap = isCheap,
-                                    NonHuman = nonHuman,
-                                    NoStatus = noStatus,
-                                    Config = customConfig
-                                }
+                    Data['Conns']['ToolAdded'] = Character.ChildAdded:Connect(function(Child)
+                        if Child:IsA('Tool') then
+                            Data['CurrentTool'] = Child.Name
+                        end
+                    end)
+
+                    Data['Conns']['ToolRemoved'] = Character.ChildRemoved:Connect(function(Child)
+                        if Child:IsA('Tool') then
+                            Data['CurrentTool'] = nil
+                        end
+                    end)
+                end
+
+                Data['BindTool'] = ToolHandler.BindTool
+            end
+
+            local ChildHandler = {}; do
+                function ChildHandler.BindChildren(Character)
+                    if Data['Conns']['ChildAdded'] then
+                        Data['Conns']['ChildAdded']:Disconnect();
+                    end;
+
+                    if Data['Conns']['ChildRemoved'] then
+                        Data['Conns']['ChildRemoved']:Disconnect();
+                    end;
+
+                    local Children = Character:GetChildren();
+                    Data['Children'] = Children;
+
+                    Data['Conns']['ChildAdded'] = Character.ChildAdded:Connect(function(Child)
+                        Children[#Children + 1] = Child;
+                    end)
+
+                    Data['Conns']['ChildRemoved'] = Character.ChildRemoved:Connect(function(Child)
+                        for I = #Children, 1, -1 do
+                            if Children[I] == Child then
+                                Remove(Children, I);
+                                break;
+                            end;
+                        end
+                    end)
+
+                    Data['BindTool'](Character);
+                end
+
+                Data['BindChildren'] = ChildHandler.BindChildren;
+            end
+
+            local FlagsHandler = {}; do
+                function FlagsHandler.BindFlags(Humanoid)
+                    if Data['Conns']['MoveDir'] then
+                        Data['Conns']['MoveDir']:Disconnect();
+                    end;
+
+                    if Data['Conns']['StateChange'] then
+                        Data['Conns']['StateChange']:Disconnect();
+                    end;
+
+                    local Objects = Data['Objects']
+                    Data['JumpActive'] = false;
+                    Data['WalkActive'] = false;
+
+                    Objects['WalkFlag'].Visible = false;
+                    Objects['JumpFlag'].Visible = false;
+
+                    Data['Conns']['MoveDir'] = Humanoid:GetPropertyChangedSignal('MoveDirection'):Connect(function()
+                        local Walking = Humanoid.MoveDirection ~= ZeroVector3;
+
+                        if Walking and not Data['WalkActive'] then
+                            Data['WalkActive'] = true;
+
+                            if Data['JumpActive'] then
+                                Objects['WalkFlag'].LayoutOrder = 2;
+                            else
+                                Objects['WalkFlag'].LayoutOrder = 1;
+                                Objects['JumpFlag'].LayoutOrder = 2;
+                            end
+
+                            Objects['WalkFlag'].Visible = true
+                        elseif not Walking and Data['WalkActive'] then
+                            Data['WalkActive'] = false;
+                            Objects['WalkFlag'].Visible = false;
+
+                            if Data['JumpActive'] then
+                                Objects['JumpFlag'].LayoutOrder = 1;
                             end
                         end
+                    end)
+
+                    Data['Conns']['StateChange'] = Humanoid.StateChanged:Connect(function(_, NewState)
+                        local Jumping = NewState == Enum.HumanoidStateType.Jumping or NewState == Enum.HumanoidStateType.Freefall
+
+                        if Jumping and not Data['JumpActive'] then
+                            Data['JumpActive'] = true;
+
+                            if Data['WalkActive'] then
+                                Objects['JumpFlag'].LayoutOrder = 2;
+                            else
+                                Objects['JumpFlag'].LayoutOrder = 1;
+                                Objects['WalkFlag'].LayoutOrder = 2;
+                            end
+
+                            Objects['JumpFlag'].Visible = true
+                        elseif not Jumping and Data['JumpActive'] then
+                            Data['JumpActive'] = false;
+                            Objects['JumpFlag'].Visible = false;
+
+                            if Data['WalkActive'] then
+                                Objects['WalkFlag'].LayoutOrder = 1;
+                            end
+                        end
+                    end)
+                end
+
+                Data['BindFlags'] = FlagsHandler.BindFlags;
+            end
+
+            local CharacterHandler = {}; do
+                function CharacterHandler.OnCharacter(Character)
+                    Data['Character'] = Character;
+                    Data['RootPart'] = nil;
+                    Data['Humanoid'] = nil;
+                    Data['Children'] = nil;
+                    Data['Alive'] = false;
+                    Data['WalkActive'] = false;
+                    Data['JumpActive'] = false;
+
+                    if not Character or not Character.Parent then
+                        return;
+                    end;
+
+                    local RootPart = FindFirstChild(Character, "HumanoidRootPart");
+
+                    if not RootPart then
+                        RootPart = Character:WaitForChild('HumanoidRootPart', 10);
+                    end
+
+                    local Humanoid = FindFirstChildOfClass(Character, 'Humanoid');
+
+                    if not Humanoid then
+                        Humanoid = Character:WaitForChild('Humanoid', 10);
+                    end;
+
+                    if not RootPart or not Humanoid then
+                        return;
+                    end;
+
+                    if not Character.Parent then
+                        return;
+                    end;
+
+                    Data['RootPart'] = RootPart;
+                    Data['Humanoid'] = Humanoid;
+
+                    Data['BindChildren'](Character);
+                    Data['BindHealth'](Humanoid);
+                    Data['BindFlags'](Humanoid);
+                end
+
+                Data['Conns']['CharAdded'] = Player.CharacterAdded:Connect(function(Character)
+                    task.defer(CharacterHandler.OnCharacter, Character)
+                end)
+
+                if Player.Character and Player.Character.Parent then
+                    task.defer(CharacterHandler.OnCharacter, Player.Character)
+                end
+            end
+        end
+
+        function Library:RemoveTarget(Player)
+            local Data = self['Cache'][Player];
+
+            if not Data then
+                return;
+            end;
+
+            for _, Connections in Data['Conns'] do
+                Connections:Disconnect()
+            end;
+
+            Clear(Data['Conns']);
+
+            if Data['Objects']['TargetHolder'] then
+                Data['Objects']['TargetHolder']:Destroy();
+            end;
+
+            Clear(Data['Objects']);
+            self['Cache'][Player] = nil;
+        end
+
+        function Library:Update(Player, Data)
+            local Objects = Data['Objects']
+
+            if not Data['RootPart'] then
+                if Objects['TargetHolder'].Visible then
+                    Objects['TargetHolder'].Visible = false
+                end
+                return
+            end
+
+            if not Data['Alive'] then
+                if Objects['TargetHolder'].Visible then
+                    Objects['TargetHolder'].Visible = false
+                end
+                return
+            end
+
+            local RootPos = Data['RootPart'].Position
+            local Distance = Floor((CameraPosition - RootPos).Magnitude)
+
+            if Distance > Table['Distance'] then
+                if Objects['TargetHolder'].Visible then
+                    Objects['TargetHolder'].Visible = false
+                end
+                return
+            end
+
+            local W, H, X, Y, OnScreen = self:CalculateBox(Data)
+
+            if not OnScreen or not W then
+                if Objects['TargetHolder'].Visible then
+                    Objects['TargetHolder'].Visible = false
+                end
+                return
+            end
+
+            W = Floor(W)
+            H = Floor(H)
+            X = Floor(X)
+            Y = Floor(Y)
+
+            if not Objects['TargetHolder'].Visible then
+                Objects['TargetHolder'].Visible = true
+            end
+
+            local DirtySizes = Data['LastW'] ~= W or Data['LastH'] ~= H
+            local DirtyPosition = Data['LastX'] ~= X or Data['LastY'] ~= Y
+
+            if DirtyPosition then
+                Objects['TargetHolder'].Position = DimOffset(X, Y)
+                Data['LastX'] = X
+                Data['LastY'] = Y
+            end
+
+            if DirtySizes then
+                Objects['TargetHolder'].Size = DimOffset(W, H)
+                Objects['BoxGlow'].Size = DimOffset(W, H)
+                Objects['BoxOutlineHolder'].Size = DimOffset(W, H)
+                Objects['BoxInlineHolder'].Size = DimOffset(W + 2, H + 2)
+                Objects['BoxFill'].Size = DimOffset(W, H)
+                Data['LastW'] = W
+                Data['LastH'] = H
+            end
+
+            local BoxesCfg = Table['Boxes']
+            local TextsCfg = Table['Texts']
+
+            if BoxesCfg['Enabled'] then
+                if BoxesCfg['Box Glow']['Enabled'] then
+                    if Objects['BoxGlow'].ImageTransparency ~= 0 then
+                        Objects['BoxGlow'].ImageTransparency = 0
+                    end
+
+                    local GlowTop = BoxesCfg['Box Glow']['Top']
+                    local GlowBot = BoxesCfg['Box Glow']['Bot']
+
+                    if Data['LastGlowTop'] ~= GlowTop or Data['LastGlowBot'] ~= GlowBot then
+                        Objects['BoxGlowGradient'].Color = ColorSequence.new({
+                            ColorSequenceKeypoint.new(0, GlowTop),
+                            ColorSequenceKeypoint.new(1, GlowBot),
+                        })
+                        Data['LastGlowTop'] = GlowTop
+                        Data['LastGlowBot'] = GlowBot
+                    end
+
+                    local T1 = BoxesCfg['Box Glow']['Transparency'][1]
+                    local T2 = BoxesCfg['Box Glow']['Transparency'][2]
+
+                    if Data['LastGlowT1'] ~= T1 or Data['LastGlowT2'] ~= T2 then
+                        Objects['BoxGlowGradient'].Transparency = NumSeq({NumKey(0, T1), NumKey(1, T2)})
+                        Data['LastGlowT1'] = T1
+                        Data['LastGlowT2'] = T2
+                    end
+                else
+                    if Objects['BoxGlow'].ImageTransparency ~= 1 then
+                        Objects['BoxGlow'].ImageTransparency = 1
+                    end
+                end
+
+                if not Objects['BoxOutlineHolder'].Visible then
+                    Objects['BoxOutlineHolder'].Visible = true
+                end
+
+                if not Objects['BoxInlineHolder'].Visible then
+                    Objects['BoxInlineHolder'].Visible = true
+                end
+
+                local GradTop = BoxesCfg['Gradients']['Top']
+                local GradBot = BoxesCfg['Gradients']['Bot']
+
+                if Data['LastGradTop'] ~= GradTop or Data['LastGradBot'] ~= GradBot then
+                    Objects['BoxInlineGradient'].Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, GradTop),
+                        ColorSequenceKeypoint.new(1, GradBot),
+                    })
+                    Data['LastGradTop'] = GradTop
+                    Data['LastGradBot'] = GradBot
+                end
+
+                if BoxesCfg['Filled']['Enabled'] then
+                    if not Objects['BoxFill'].Visible then
+                        Objects['BoxFill'].Visible = true
+                    end
+
+                    local FillTop = BoxesCfg['Filled']['Top']
+                    local FillBot = BoxesCfg['Filled']['Bot']
+                    local FillT1 = BoxesCfg['Filled']['Transparency'][1]
+                    local FillT2 = BoxesCfg['Filled']['Transparency'][2]
+
+                    if Data['LastFillTop'] ~= FillTop or Data['LastFillBot'] ~= FillBot then
+                        Objects['BoxFillGradient'].Color = ColorSequence.new({
+                            ColorSequenceKeypoint.new(0, FillTop),
+                            ColorSequenceKeypoint.new(1, FillBot),
+                        })
+                        Data['LastFillTop'] = FillTop
+                        Data['LastFillBot'] = FillBot
+                    end
+
+                    if Data['LastFillT1'] ~= FillT1 or Data['LastFillT2'] ~= FillT2 then
+                        Objects['BoxFillGradient'].Transparency = NumSeq({NumKey(0, FillT1), NumKey(1, FillT2)})
+                        Data['LastFillT1'] = FillT1
+                        Data['LastFillT2'] = FillT2
+                    end
+                else
+                    if Objects['BoxFill'].Visible then
+                        Objects['BoxFill'].Visible = false
                     end
                 end
             else
-                if CheckNames(inst, config.Names) and CheckContains(inst, config.Contains) and not CheckBlockNames(inst, config.BlockNames) then
-                    local humanoid = inst:FindFirstChild("Humanoid")
-                    if nonHuman or (not humanoid or humanoid.Health > 0) then
-                        local actualName = (displayName and displayName ~= "") and displayName or inst.Name
-                        newTracked[inst] = {
-                            name = actualName,
-                            Cheap = isCheap,
-                            NonHuman = nonHuman,
-                            NoStatus = noStatus,
-                            Config = customConfig
-                        }
+                if Objects['BoxGlow'].ImageTransparency ~= 1 then
+                    Objects['BoxGlow'].ImageTransparency = 1
+                end
+
+                if Objects['BoxOutlineHolder'].Visible then
+                    Objects['BoxOutlineHolder'].Visible = false
+                end
+
+                if Objects['BoxInlineHolder'].Visible then
+                    Objects['BoxInlineHolder'].Visible = false
+                end
+
+                if Objects['BoxFill'].Visible then
+                    Objects['BoxFill'].Visible = false
+                end
+            end
+
+            if TextsCfg['Name']['Enabled'] then
+                if not Objects['TargetName'].Visible then
+                    Objects['TargetName'].Visible = true
+                end
+
+                local DisplayName = Player.DisplayName
+
+                if Data['LastDisplayName'] ~= DisplayName then
+                    Objects['TargetName'].Text = DisplayName
+                    Data['LastDisplayName'] = DisplayName
+                end
+
+                local NameColor = TextsCfg['Name']['Color']
+
+                if Data['LastNameColor'] ~= NameColor then
+                    Objects['TargetName'].TextColor3 = NameColor
+                    Data['LastNameColor'] = NameColor
+                end
+            else
+                if Objects['TargetName'].Visible then
+                    Objects['TargetName'].Visible = false
+                end
+            end
+
+            if TextsCfg['Distance']['Enabled'] then
+                if not Objects['Distance'].Visible then
+                    Objects['Distance'].Visible = true
+                end
+
+                if Data['LastDist'] ~= Distance then
+                    Objects['Distance'].Text = Format('%dst', Distance)
+                    Data['LastDist'] = Distance
+                end
+
+                local DistColor = TextsCfg['Distance']['Color']
+
+                if Data['LastDistColor'] ~= DistColor then
+                    Objects['Distance'].TextColor3 = DistColor
+                    Data['LastDistColor'] = DistColor
+                end
+            else
+                if Objects['Distance'].Visible then
+                    Objects['Distance'].Visible = false
+                end
+            end
+
+            local HealthCfg = Table['Bars']['Health Bar']
+            local ArmorCfg = Table['Bars']['Armor Bar']
+
+            if HealthCfg['Enabled'] then
+                local Health = Data['Health'] or 0
+                local MaxHealth = Data['MaxHealth'] or 100
+                local Ratio = Clamp(Health / MaxHealth, 0, 1)
+
+                if not Objects['LeftBarHolder'].Visible then
+                    Objects['LeftBarHolder'].Visible = true
+                end
+
+                if not Objects['HealthBarOutline'].Visible then
+                    Objects['HealthBarOutline'].Visible = true
+                end
+
+                if Data['LastRatio'] ~= Ratio then
+                    Objects['HealthBar'].Size = Dim2(1, 0, Ratio, 0)
+                    Data['LastRatio'] = Ratio
+                end
+
+                local GradTop = HealthCfg['Top']
+                local GradMid = HealthCfg['Mid']
+                local GradBot = HealthCfg['Bot']
+
+                if Data['LastHealthTop'] ~= GradTop or Data['LastHealthMid'] ~= GradMid or Data['LastHealthBot'] ~= GradBot then
+                    Objects['HealthBarGradient'].Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, GradTop),
+                        ColorSequenceKeypoint.new(0.5, GradMid),
+                        ColorSequenceKeypoint.new(1, GradBot),
+                    })
+                    Data['LastHealthTop'] = GradTop
+                    Data['LastHealthMid'] = GradMid
+                    Data['LastHealthBot'] = GradBot
+                end
+
+                if HealthCfg['Enabled'] then
+                    if not Objects['HealthBarText'].Visible then
+                        Objects['HealthBarText'].Visible = true
+                    end
+
+                    local FlooredHealth = Floor(Health)
+
+                    if Data['LastHealthFloor'] ~= FlooredHealth then
+                        Objects['HealthBarText'].Text = Format('%d', FlooredHealth)
+                        Objects['HealthBarText'].Position = Dim2(1, -10, 1 - Ratio, 1)
+                        Data['LastHealthFloor'] = FlooredHealth
+                    end
+                else
+                    if Objects['HealthBarText'].Visible then
+                        Objects['HealthBarText'].Visible = false
+                    end
+                end
+            else
+                if Objects['HealthBarOutline'].Visible then
+                    Objects['HealthBarOutline'].Visible = false
+                end
+
+                if Objects['HealthBarText'].Visible then
+                    Objects['HealthBarText'].Visible = false
+                end
+
+                if not ArmorCfg['Enabled'] then
+                    if Objects['LeftBarHolder'].Visible then
+                        Objects['LeftBarHolder'].Visible = false
                     end
                 end
             end
-        end
-    end
 
-    for inst, data in pairs(newTracked) do
-        if not TrackedInstances[inst] then
-            TrackedInstances[inst] = {
-                espObj = CreateESPObj(data.name),
-                name = data.name,
-                Cheap = data.Cheap,
-                NonHuman = data.NonHuman,
-                NoStatus = data.NoStatus,
-                Config = data.Config
-            }
-        else
-            TrackedInstances[inst].name = data.name
-            TrackedInstances[inst].Cheap = data.Cheap
-            TrackedInstances[inst].NonHuman = data.NonHuman
-            TrackedInstances[inst].NoStatus = data.NoStatus
-            TrackedInstances[inst].Config = data.Config
-        end
-    end
+            if ArmorCfg['Enabled'] then
+                local Ratio = Clamp(Data['Armor'] / Data['MaxArmor'], 0, 1)
 
-    for inst, data in pairs(TrackedInstances) do
-        if not newTracked[inst] or not inst.Parent then
-            data.espObj:Destroy()
-            TrackedInstances[inst] = nil
-        end
-    end
-end)
+                if not Objects['BottomBarHolder'].Visible then
+                    Objects['BottomBarHolder'].Visible = true
+                end
 
-local lastScan = 0
-local lastRender = 0
-local lastFontRetry = 0
-local function RuntimeStep()
-    if not ESPConfig.Enabled then
-        for inst, data in pairs(TrackedInstances) do
-            if data.espObj then
-                local disabledConfig = DeepCopy(data.Config or {})
-                disabledConfig.Chams = disabledConfig.Chams or {}
-                disabledConfig.Chams.Enabled = false
-                UpdateESPObj(data.espObj, nil, nil, "", 0, inst, data.Cheap, data.NonHuman, data.NoStatus, disabledConfig,
-                    false)
+                if not Objects['ArmorBarOutline'].Visible then
+                    Objects['ArmorBarOutline'].Visible = true
+                end
+
+                if Data['LastArmorRatio'] ~= Ratio then
+                    Objects['ArmorBar'].Size = Dim2(Ratio, 0, 1, 0)
+                    Data['LastArmorRatio'] = Ratio
+                end
+
+                local GradTop = ArmorCfg['Top']
+                local GradMid = ArmorCfg['Mid']
+                local GradBot = ArmorCfg['Bot']
+
+                if Data['LastArmorTop'] ~= GradTop or Data['LastArmorMid'] ~= GradMid or Data['LastArmorBot'] ~= GradBot then
+                    Objects['ArmorBarGradient'].Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, GradTop),
+                        ColorSequenceKeypoint.new(0.5, GradMid),
+                        ColorSequenceKeypoint.new(1, GradBot),
+                    })
+                    Data['LastArmorTop'] = GradTop
+                    Data['LastArmorMid'] = GradMid
+                    Data['LastArmorBot'] = GradBot
+                end
+
+                if Ratio < 1 then
+                    if not Objects['ArmorBarText'].Visible then
+                        Objects['ArmorBarText'].Visible = true
+                    end
+
+                    local FlooredArmor = Floor(Data['Armor'])
+
+                    if Data['LastArmorFloor'] ~= FlooredArmor then
+                        Objects['ArmorBarText'].Text = Format('%d', FlooredArmor)
+                        Data['LastArmorFloor'] = FlooredArmor
+                    end
+                else
+                    if Objects['ArmorBarText'].Visible then
+                        Objects['ArmorBarText'].Visible = false
+                    end
+                end
+            else
+                if Objects['BottomBarHolder'].Visible then
+                    Objects['BottomBarHolder'].Visible = false
+                end
+
+                if Objects['ArmorBarOutline'].Visible then
+                    Objects['ArmorBarOutline'].Visible = false
+                end
+
+                if Objects['ArmorBarText'].Visible then
+                    Objects['ArmorBarText'].Visible = false
+                end
+            end
+
+            local WeaponCfg = TextsCfg['Weapon']
+
+            if WeaponCfg['Enabled'] then
+                if not Objects['Weapon'].Visible then
+                    Objects['Weapon'].Visible = true
+                end
+
+                local CurrentTool = Data['CurrentTool'] or 'none'
+
+                if Data['LastWeapon'] ~= CurrentTool then
+                    Objects['Weapon'].Text = CurrentTool
+                    Data['LastWeapon'] = CurrentTool
+                end
+
+                local WeaponColor = WeaponCfg['Color']
+
+                if Data['LastWeaponColor'] ~= WeaponColor then
+                    Objects['Weapon'].TextColor3 = WeaponColor
+                    Data['LastWeaponColor'] = WeaponColor
+                end
+            else
+                if Objects['Weapon'].Visible then
+                    Objects['Weapon'].Visible = false
+                end
             end
         end
-        return
-    end
 
-    local now = tick()
+        do
+            Library:CreateThreads('Renderer', RunService.RenderStepped, function()
+                if not Table['Enabled'] then
+                    for _, Data in Library['Cache'] do
+                        if Data['Objects']['TargetHolder'].Visible then
+                            Data['Objects']['TargetHolder'].Visible = false
+                        end;
+                    end;
+                    return
+                end;
 
-    if FontsStillLoading and now - lastFontRetry > 5 then
-        lastFontRetry = now
-        AttemptLoadFonts()
-    end
+                local Now = os.clock();
 
-    if ESPConfig.LimitFPS and ESPConfig.LimitFPS > 0 then
-        if now - lastRender < (1 / ESPConfig.LimitFPS) then return end
-        lastRender = now
-    end
+                if Now - Updates < Frame then
+                    return;
+                end;
 
-    if now - lastScan > 1 then
-        lastScan = now
-        ScanDirectories()
-    end
+                Updates = Now;
+                CameraPosition = Camera.CFrame.Position;
 
-    for inst, data in pairs(TrackedInstances) do
-        if not inst or not inst.Parent then
-            data.espObj:Destroy()
-            TrackedInstances[inst] = nil
-            continue
+                for Player, Data in Library['Cache'] do
+                    Library:Update(Player, Data)
+                end
+            end)
         end
 
-        local humanoid = not data.NonHuman and inst:FindFirstChild("Humanoid") or nil
-        if humanoid and humanoid.Health <= 0 then
-            data.espObj:Destroy()
-            TrackedInstances[inst] = nil
-            continue
+        do
+            for _, Player in Players:GetPlayers() do
+                Library:AddTarget(Player)
+            end
+
+            Library:CreateThreads('PlayerAdded', Players.PlayerAdded, function(Player)
+                Library:AddTarget(Player)
+            end)
+
+            Library:CreateThreads('PlayerRemoving', Players.PlayerRemoving, function(Player)
+                Library:RemoveTarget(Player)
+            end)
         end
 
-        local rootPart = inst:IsA("Model") and
-            (inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChildWhichIsA("BasePart")) or
-            (inst:IsA("BasePart") and inst)
+        do
+            function Library:Unload()
+                for Player in self['Cache'] do
+                    self:RemoveTarget(Player);
+                end;
 
-        if rootPart then
-            local onscreen, pos2d, size2d = Get2DBoundingBox(inst)
-            local distanceStuds = (Camera.CFrame.Position - rootPart.Position).Magnitude
-            UpdateESPObj(data.espObj, pos2d, size2d, data.name, distanceStuds, inst, data.Cheap, data.NonHuman,
-                data.NoStatus, data.Config, onscreen)
-        else
-            UpdateESPObj(data.espObj, nil, nil, data.name, 0, inst, data.Cheap, data.NonHuman, data.NoStatus, data
-                .Config, false)
-        end
-    end
-end
+                for _, Conn in self['Connections'] do
+                    Conn:Disconnect();
+                end;
 
-function ESP:Unload()
-    for inst, data in pairs(TrackedInstances) do
-        if data.espObj then
-            data.espObj:Destroy()
-        end
-        TrackedInstances[inst] = nil
-    end
+                Clear(self['Connections']);
 
-    if PlayerRemovingConnection then
-        PlayerRemovingConnection:Disconnect()
-        PlayerRemovingConnection = nil
-    end
-    if InputBeganConnection then
-        InputBeganConnection:Disconnect()
-        InputBeganConnection = nil
-    end
-    if getgenv().SensoryESP_Loop then
-        getgenv().SensoryESP_Loop:Disconnect()
-        getgenv().SensoryESP_Loop = nil
-    end
-    if ScreenGui then
-        ScreenGui:Destroy()
-        ScreenGui = nil
-    end
-    if ChamsContainer then
-        ChamsContainer:Destroy()
-        ChamsContainer = nil
-    end
-    if MeshChamsFolder then
-        MeshChamsFolder:Destroy()
-        MeshChamsFolder = nil
-    end
+                for _, Conn in self['Threads'] do
+                    Conn:Disconnect();
+                end;
 
-    CleanupMeshChams(Workspace)
-    for _, player in ipairs(BootstrapPlayers:GetPlayers()) do
-        CleanupCharacterMeshChams(player.Character)
-    end
+                Clear(self['Threads']);
 
-    getgenv().SensoryESP_UI = nil
-end
+                if self['Holder'] then
+                    self['Holder']:Destroy();
+                    self['Holder'] = nil;
+                end;
 
-function ESP:Load(config)
-    self:Unload()
-
-    ESPConfig = DeepMerge(DeepCopy(DefaultESPConfig), config or {})
-    EnsureRootInstances()
-    CurrentRunId = HttpService:GenerateGUID(false)
-    lastScan = 0
-    lastRender = 0
-
-    PlayerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
-        for inst, data in pairs(TrackedInstances) do
-            if Players:GetPlayerFromCharacter(inst) == player then
-                data.espObj:Destroy()
-                TrackedInstances[inst] = nil
+                Clear(self['Cache']);
             end
         end
-    end)
 
-    InputBeganConnection = UserInputService.InputBegan:Connect(function(input, gpe)
-        if not gpe and ESPConfig.Keybind.Enabled and input.KeyCode == ESPConfig.Keybind.Key then
-            ESPConfig.Enabled = not ESPConfig.Enabled
-        end
-    end)
-
-    getgenv().SensoryESP_Loop = RunService.RenderStepped:Connect(RuntimeStep)
-    ScanDirectories()
-    return self
-end
-
-function ESP:GetConfig()
-    return ESPConfig
-end
-
-getgenv().SensoryESP_Unload = function()
-    ESP:Unload()
-end
-
--- Automatically load the ESP when the script is run
-task.spawn(function()
-    ESP:Load()
-end)
-
-return ESP
+        return Library
