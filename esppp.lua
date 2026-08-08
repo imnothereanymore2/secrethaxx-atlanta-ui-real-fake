@@ -103,24 +103,20 @@ getgenv().Library = {
 			},
 		},
 		['Flags'] = {
-			['Name'] = {
-       ['Enabled'] = true,
-			},
-
-			['Distance'] = {
-				['Enabled'] = true,
-			},
-
-			['Jump'] = {
-				['Enabled'] = true,
-			},
-
-			['Walk'] = {
-				['Enabled'] = true,
-			},
-
-
-		},
+    ['Enabled'] = true,
+    ['Name'] = {
+        ['Enabled'] = true,
+    },
+    ['Distance'] = {
+        ['Enabled'] = true,
+    },
+    ['Jump'] = {
+        ['Enabled'] = true,
+    },
+    ['Walk'] = {
+        ['Enabled'] = true,
+    },
+},
 	}
 }
         local Table = Library['Table'];
@@ -1085,7 +1081,7 @@ getgenv().Library = {
                     Data['Conns']['MoveDir'] = Humanoid:GetPropertyChangedSignal('MoveDirection'):Connect(function()
                         local Walking = Humanoid.MoveDirection ~= ZeroVector3;
 
-                        if Library['Flags']['Enabled'] and Library['Flags']['Walk']['Enabled'] and Walking and not Data['WalkActive'] then
+                       if Table['Flags']['Enabled'] and Table['Flags']['Walk']['Enabled'] and Walking and not Data['WalkActive'] then
                             Data['WalkActive'] = true;
 
                             if Data['JumpActive'] then
@@ -1109,7 +1105,7 @@ getgenv().Library = {
                     Data['Conns']['StateChange'] = Humanoid.StateChanged:Connect(function(_, NewState)
                         local Jumping = NewState == Enum.HumanoidStateType.Jumping or NewState == Enum.HumanoidStateType.Freefall
 
-                        if Library['Flags']['Enabled'] and Library['Flags']['Jump']['Enabled'] and Jumping and not Data['JumpActive'] then
+                       if Table['Flags']['Enabled'] and Table['Flags']['Jump']['Enabled'] and Jumping and not Data['JumpActive'] then
                             Data['JumpActive'] = true;
 
                             if Data['WalkActive'] then
