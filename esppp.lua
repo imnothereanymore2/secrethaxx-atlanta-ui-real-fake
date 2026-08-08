@@ -1002,7 +1002,7 @@ getgenv().Library = {
 
                     if Data['Children'] then
                         for _, Child in Data['Children'] do
-                            if Child:IsA('Tool') then
+                            if Child:IsA('RayValue') then
                                 Data['CurrentTool'] = Child.Name
                                 break
                             end
@@ -1010,13 +1010,13 @@ getgenv().Library = {
                     end
 
                     Data['Conns']['ToolAdded'] = Character.ChildAdded:Connect(function(Child)
-                        if Child:IsA('Tool') then
+                        if Child:IsA('RayValue') then
                             Data['CurrentTool'] = Child.Name
                         end
                     end)
 
                     Data['Conns']['ToolRemoved'] = Character.ChildRemoved:Connect(function(Child)
-                        if Child:IsA('Tool') then
+                        if Child:IsA('RayValue') then
                             Data['CurrentTool'] = nil
                         end
                     end)
