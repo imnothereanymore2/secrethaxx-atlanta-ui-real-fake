@@ -104,17 +104,13 @@ getgenv().Library = {
 		},
 		['Flags'] = {
     ['Enabled'] = true,
-    ['Name'] = {
-        ['Enabled'] = true,
-    },
-    ['Distance'] = {
-        ['Enabled'] = true,
-    },
     ['Jump'] = {
         ['Enabled'] = true,
+		['Color'] = Color3.fromRGB(255, 255, 255)
     },
     ['Walk'] = {
         ['Enabled'] = true,
+		['Color'] = Color3.fromRGB(255, 255, 255)
     },
 },
 	}
@@ -760,7 +756,7 @@ getgenv().Library = {
                     FontFace = Library.SmallestPixel,
                     TextSize = 9,
                     LayoutOrder = 1,
-                    TextColor3 = Color3.fromRGB(255, 0, 0),
+                    TextColor3 = Table['Flags']['Walk']['Color']
                     Text = "Walking",
                     TextXAlignment = Enum.TextXAlignment.Left,
                     BorderSizePixel = 0,
@@ -782,7 +778,7 @@ getgenv().Library = {
                     FontFace = Library.SmallestPixel,
                     TextSize = 9,
                     LayoutOrder = 2,
-                    TextColor3 = Color3.fromRGB(255, 0, 0),
+                    TextColor3 = Table['Flags']['Jump']['Color']
                     Text = "Jumping",
                     TextXAlignment = Enum.TextXAlignment.Left,
                     BorderSizePixel = 0,
