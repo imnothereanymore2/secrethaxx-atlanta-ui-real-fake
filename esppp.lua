@@ -11,6 +11,7 @@
         local Workspace, Players, RunService, HttpService = GetService["Workspace"], GetService["Players"], GetService["RunService"], GetService["HttpService"];
         local LocalPlayer, Camera = Players.LocalPlayer, Workspace.CurrentCamera;
         local WorldToViewportPoint, FindFirstChildOfClass, FindFirstChild = Camera.WorldToViewportPoint, game.FindFirstChildOfClass, game.FindFirstChild;
+        local Hostile,Customs = Workspace:FindFirstChild("NPCs").Hostile,Workspace:FindFirstChild("NPCs").Custom
 
         local NewVector3, NewVector2, Dim, Dim2, DimOffset = Vector3.new, Vector2.new, UDim.new, UDim2.new, UDim2.fromOffset;
         local NumSeq = NumberSequence.new;
@@ -1611,11 +1612,12 @@ getgenv().Library = {
 	            Library:AddTarget(Player)
             end
 
-            for _, npc in Hostile:GetChildren() do
+    
+             for _, npc in Hostile:GetChildren() do
 	            Library:AddTarget(npc)
             end
 
-            for _, npc in Customs:GetChildren() do
+                for _, npc in Customs:GetChildren() do
             	Library:AddTarget(npc)
             end
 
@@ -1627,7 +1629,7 @@ getgenv().Library = {
             	Library:RemoveTarget(Player)
             end)
 
-            Library:CreateThreads('HostileAdded', Hostile.ChildAdded, function(npc)
+                Library:CreateThreads('HostileAdded', Hostile.ChildAdded, function(npc)
             	Library:AddTarget(npc)
             end)
 
