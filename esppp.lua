@@ -1176,8 +1176,10 @@ getgenv().Library = {
                 end)
                 end
 
-                if Player.Character and Player.Character.Parent then
+                if Player:IsA("Character") and Player.Character and Player.Character.Parent then
                     task.defer(CharacterHandler.OnCharacter, Player.Character)
+		else
+					 task.defer(CharacterHandler.OnCharacter, Player)
                 end
             end
         end
