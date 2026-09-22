@@ -1383,7 +1383,7 @@ getgenv().Library = {
                     Objects['TargetName'].Visible = true
                 end
 
-                local DisplayName = Player.DisplayName
+                local DisplayName = Player.Name
 
                 if Data['LastDisplayName'] ~= DisplayName then
                     Objects['TargetName'].Text = DisplayName
