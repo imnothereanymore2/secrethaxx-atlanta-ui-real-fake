@@ -38,6 +38,7 @@ getgenv().Library = {
 
 	['Table'] = {
 		['Enabled'] = true,
+		['_ENPC'] = false,
 		['Distance'] = 7520,
 
 		['Boxes'] = {
@@ -1201,6 +1202,13 @@ getgenv().Library = {
 
         function Library:Update(Player, Data)
             local Objects = Data['Objects']
+            
+            if not Player:IsA("Player") and not Table['_ENPC'] then
+                if Objects['TargetHolder'].Visible then
+                    Objects['TargetHolder'].Visible = false
+                end
+                return
+            end
 
             if not Data['RootPart'] then
                 if Objects['TargetHolder'].Visible then
@@ -1595,16 +1603,42 @@ getgenv().Library = {
         end
 
         do
+       
+
             for _, Player in Players:GetPlayers() do
-                Library:AddTarget(Player)
+	            Library:AddTarget(Player)
+            end
+
+            for _, npc in Hostile:GetChildren() do
+	            Library:AddTarget(npc)
+            end
+
+            for _, npc in Customs:GetChildren() do
+            	Library:AddTarget(npc)
             end
 
             Library:CreateThreads('PlayerAdded', Players.PlayerAdded, function(Player)
-                Library:AddTarget(Player)
+            	Library:AddTarget(Player)
             end)
 
             Library:CreateThreads('PlayerRemoving', Players.PlayerRemoving, function(Player)
-                Library:RemoveTarget(Player)
+            	Library:RemoveTarget(Player)
+            end)
+
+            Library:CreateThreads('HostileAdded', Hostile.ChildAdded, function(npc)
+            	Library:AddTarget(npc)
+            end)
+
+            Library:CreateThreads('HostileRemoving', Hostile.ChildRemoved, function(npc)
+            	Library:RemoveTarget(npc)
+            end)
+
+            Library:CreateThreads('CustomAdded', Customs.ChildAdded, function(npc)
+            	Library:AddTarget(npc)
+            end)
+
+            Library:CreateThreads('CustomRemoving', Customs.ChildRemoved, function(npc)
+            	Library:RemoveTarget(npc)
             end)
         end
 
