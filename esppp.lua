@@ -11,6 +11,7 @@
         local Workspace, Players, RunService, HttpService = GetService["Workspace"], GetService["Players"], GetService["RunService"], GetService["HttpService"];
         local LocalPlayer, Camera = Players.LocalPlayer, Workspace.CurrentCamera;
         local WorldToViewportPoint, FindFirstChildOfClass, FindFirstChild = Camera.WorldToViewportPoint, game.FindFirstChildOfClass, game.FindFirstChild;
+		local Hostile,Customs = Workspace:WaitForChild("NPCs").Hostile,Workspace:WaitForChild("NPCs").Custom
 
         local NewVector3, NewVector2, Dim, Dim2, DimOffset = Vector3.new, Vector2.new, UDim.new, UDim2.new, UDim2.fromOffset;
         local NumSeq = NumberSequence.new;
